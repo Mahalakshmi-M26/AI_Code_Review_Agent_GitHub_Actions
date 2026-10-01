@@ -14,8 +14,6 @@ on:
     secrets:
       GEP_API_KEY:
         required: true
-      GITHUB_TOKEN:
-        required: true
 
 jobs:
   ai-review:
@@ -64,7 +62,7 @@ jobs:
       - name: Run AI PR review
         working-directory: central-reviewer
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_TOKEN: ${{ github.token }}
           GEP_API_KEY: ${{ secrets.GEP_API_KEY }}
           GITHUB_REPOSITORY: ${{ inputs.target_repository || github.repository }}
           GITHUB_EVENT_PATH: ${{ github.event_path }}
