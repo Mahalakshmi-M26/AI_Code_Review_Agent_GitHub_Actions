@@ -1,0 +1,77 @@
+name: AI Code Review Reusable
+
+on:
+  workflow_call:
+    inputs:
+      target_repository:
+        description: Repository to review
+        required: false
+        type: string
+      pr_number:
+        description: Pull request number
+        required: false
+        type: string
+    secrets:
+      GEP_API_KEY:
+        required: true
+      GITHUB_TOKEN:
+        required: true
+
+jobs:
+  ai-review:
+    name: AI Pull Request Review
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+
+    env:
+      OPENAI_BASE_URL: ${{ vars.OPENAI_BASE_URL || 'https://openai.generative.engine.capgemini.com/v1' }}
+      REVIEW_MODEL: ${{ vars.REVIEW_MODEL || 'gpt-4o-mini' }}
+      MAX_FILES: ${{ vars.MAX_FILES || '40' }}
+      MAX_FILE_DIFF_CHARS: ${{ vars.MAX_FILE_DIFF_CHARS || '12000' }}
+      MAX_REVIEW_INPUT_CHARS: ${{ vars.MAX_REVIEW_INPUT_CHARS || '100000' }}
+      REVIEW_TIMEOUT_SECONDS: ${{ vars.REVIEW_TIMEOUT_SECONDS || '60' }}
+
+    steps:
+      - name: Check out the central reviewer repository
+        uses: actions/checkout@v4
+        with:
+          repository: Mahalakshmi-M26/AI_Code_Review_Agent_GitHub_Actions
+          ref: main
+          path: central-reviewer
+          fetch-depth: 1
+
+      - name: Check out the caller repository to review
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ inputs.target_repository || github.repository }}
+          path: target-repo
+          ref: ${{ github.event.pull_request.head.ref || github.ref }}
+          fetch-depth: 1
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install Python dependencies
+        working-directory: central-reviewer
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Run AI PR review
+        working-directory: central-reviewer
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GEP_API_KEY: ${{ secrets.GEP_API_KEY }}
+          GITHUB_REPOSITORY: ${{ inputs.target_repository || github.repository }}
+          GITHUB_EVENT_PATH: ${{ github.event_path }}
+          PR_NUMBER: ${{ inputs.pr_number || github.event.pull_request.number }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          PR_BODY: ${{ github.event.pull_request.body }}
+          TARGET_REPO_PATH: ${{ github.workspace }}/target-repo
+        run: python -m reviewer.main
