@@ -126,7 +126,7 @@ def main() -> None:
         diff_text=filtered["diff_text"],
     )
 
-    model_name = os.getenv("REVIEW_MODEL", "gpt-4o-mini")
+    model_name = os.getenv("REVIEW_MODEL", "openai.gpt-5")
     base_url = os.getenv("OPENAI_BASE_URL", "https://openai.generative.engine.capgemini.com/v1")
     timeout_seconds = int(os.getenv("REVIEW_TIMEOUT_SECONDS", str(REVIEW_TIMEOUT_SECONDS)))
 

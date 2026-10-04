@@ -25,7 +25,7 @@ jobs:
 
     env:
       OPENAI_BASE_URL: ${{ vars.OPENAI_BASE_URL || 'https://openai.generative.engine.capgemini.com/v1' }}
-      REVIEW_MODEL: ${{ vars.REVIEW_MODEL || 'gpt-4o-mini' }}
+      REVIEW_MODEL: ${{ vars.REVIEW_MODEL || 'openai.gpt-5' }}
       MAX_FILES: ${{ vars.MAX_FILES || '40' }}
       MAX_FILE_DIFF_CHARS: ${{ vars.MAX_FILE_DIFF_CHARS || '12000' }}
       MAX_REVIEW_INPUT_CHARS: ${{ vars.MAX_REVIEW_INPUT_CHARS || '100000' }}
