@@ -7,7 +7,6 @@ from pathlib import Path
 
 import httpx
 
-from reviewer.models import ReviewResult
 from reviewer.review import (
     MAX_FILE_DIFF_CHARS,
     MAX_FILES,

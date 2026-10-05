@@ -26,11 +26,13 @@ Consumer repositories only need a tiny caller workflow that invokes the central 
 
 - `.github/workflows/ai-code-review-reusable.yml`
 - `reviewer/__init__.py`
+- `reviewer/diff_parser.py`
 - `reviewer/main.py`
 - `reviewer/models.py`
 - `reviewer/review.py`
 - `reviewer/enterprise_review.md`
 - `tests/test_models.py`
+- `tests/test_diff_parser.py`
 - `tests/test_review.py`
 - `requirements.txt`
 - `.env.example`
@@ -61,7 +63,7 @@ No extra write permissions are requested.
 
 These optional GitHub Actions variables can be set under repository or organization variables:
 
-- `REVIEW_MODEL` default: `gpt-4o-mini`
+- `REVIEW_MODEL` default: `openai.gpt-5`
 - `OPENAI_BASE_URL` default: `https://openai.generative.engine.capgemini.com/v1`
 - `MAX_FILES` default: `40`
 - `MAX_FILE_DIFF_CHARS` default: `12000`
@@ -89,6 +91,8 @@ jobs:
 
 The same pattern can be reused in Repo B, Repo C, and other repositories without copying the reviewer code.
 
+The central reusable workflow is currently consumed by `ai-code-review-demo` and `pets-workshop`.
+
 ## Behavior
 
 The workflow triggers on:
@@ -97,7 +101,7 @@ The workflow triggers on:
 - `reopened`
 - `synchronize`
 
-The reusable workflow checks out the central reviewer repository for the Python code and the caller repository for the PR under review. The Python reviewer reads and bounds the PR diff from GitHub, maps added lines from unified-diff hunk metadata, applies the enterprise policy, calls the Capgemini model, validates the resulting JSON with Pydantic, and submits a GitHub PR review containing the summary and any eligible inline comments.
+The reusable workflow checks out the central reviewer repository for the Python code and the caller repository for the PR under review. It is used by `ai-code-review-demo` and `pets-workshop`. The reviewer reads and bounds the PR diff from GitHub, maps added lines from unified-diff hunk metadata, enriches the model prompt with those exact lines, applies the enterprise policy, calls the Capgemini Generative Engine, validates the JSON with Pydantic, and submits a GitHub PR review containing the summary and any eligible inline comments. Python, JavaScript, and Java PR changes have been validated through this shared review flow; it does not invoke language-specific compilers or test runners.
 
 ## Local test command
 
@@ -107,7 +111,7 @@ pytest
 
 ## Expected review output
 
-The review always includes the PR-level summary. Findings whose file and line match a deterministic changed-line entry also receive an inline comment in the same GitHub review submission. Invalid, absent, or deletion-only locations remain in the summary without an inline comment.
+The review always includes the PR-level summary. Findings whose file and line match a deterministic added-line entry from the bounded diff also receive an inline comment in the same GitHub review submission. Model-provided locations are checked against this map; invalid, absent, truncated-away, or deletion-only locations are set to `null` or remain summary-only without an inline comment. Inline comments use the new-file (`RIGHT`) side.
 
 ## Current limitations
 
@@ -120,4 +124,4 @@ This implementation does not yet include:
 
 ## Next step after P2
 
-P3 can add duplicate finding handling and resolved-thread lifecycle management. The reusable workflow architecture and `opened`, `reopened`, and `synchronize` triggers remain unchanged.
+P2 deterministic line mapping and inline comments are implemented. P3 can add duplicate finding handling and resolved-thread lifecycle management. The reusable workflow architecture and `opened`, `reopened`, and `synchronize` triggers remain unchanged.
