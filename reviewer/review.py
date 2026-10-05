@@ -7,6 +7,7 @@ from typing import Any
 
 import httpx
 
+from .diff_parser import build_changed_line_map_from_prompt_diff
 from .models import ReviewResult
 
 MAX_FILES = 40
@@ -100,6 +101,7 @@ def filter_changed_files(
             "files_reviewed": [],
             "files_skipped": skipped,
             "diff_text": "",
+            "changed_line_map": {},
         }
 
     diff_parts: list[str] = []
@@ -118,6 +120,7 @@ def filter_changed_files(
         "files_reviewed": [item["filename"] for item in selected],
         "files_skipped": skipped,
         "diff_text": diff_text,
+        "changed_line_map": build_changed_line_map_from_prompt_diff(diff_text),
     }
 
 
@@ -126,7 +129,17 @@ def build_review_prompt(
     pr_title: str,
     pr_body: str,
     diff_text: str,
+    changed_line_map: dict[str, list[dict[str, int | str]]] | None = None,
 ) -> str:
+    line_map = changed_line_map or build_changed_line_map_from_prompt_diff(diff_text)
+    changed_lines_text = "\n".join(
+        f"FILE: {file_name}\nChanged Lines:\n" + "\n".join(
+            f"{item['line']}: {item['content']}" for item in lines
+        )
+        for file_name, lines in line_map.items()
+        if lines
+    ) or "No inline-eligible added lines were available."
+
     return f"""
 Repository: {repo_slug}
 PR title: {pr_title}
@@ -152,6 +165,9 @@ Important rules:
 - Do not invent line numbers.
 - Do not invent runtime behavior.
 - Only report findings supported by evidence in the diff.
+- Only use supplied changed-line numbers for finding line values.
+- Never invent or guess line numbers.
+- If a finding cannot be tied to one of the supplied changed lines, return line = null.
 - Human approval remains required.
 
 Return ONLY valid JSON.
@@ -205,10 +221,96 @@ Rules:
   BLOCKER, CRITICAL, HIGH, MEDIUM, LOW, INFO.
 - line must be an integer or null.
 
-The diff to review:
+The bounded diff to review:
 
 {diff_text}
+
+Deterministic changed lines (these are the only permitted non-null finding line values):
+
+{changed_lines_text}
 """
+
+
+def validate_finding_lines(
+    result: ReviewResult,
+    changed_line_map: dict[str, list[dict[str, int | str]]],
+) -> ReviewResult:
+    """Null model locations not present among the supplied changed lines."""
+    valid_lines = {
+        file_name: {item["line"] for item in entries}
+        for file_name, entries in changed_line_map.items()
+    }
+    findings = [
+        finding.model_copy(update={
+            "line": finding.line
+            if finding.line is not None
+            and finding.file in valid_lines
+            and finding.line in valid_lines[finding.file]
+            else None
+        })
+        for finding in result.findings
+    ]
+    return result.model_copy(update={"findings": findings})
+
+
+def build_inline_review_comments(
+    result: ReviewResult,
+    changed_line_map: dict[str, list[dict[str, int | str]]],
+) -> list[dict[str, Any]]:
+    """Create GitHub review comments only for validated added-line locations."""
+    valid_lines = {
+        file_name: {item["line"] for item in entries}
+        for file_name, entries in changed_line_map.items()
+    }
+    comments: list[dict[str, Any]] = []
+    for finding in result.findings:
+        if (
+            finding.line is None
+            or finding.file not in valid_lines
+            or finding.line not in valid_lines[finding.file]
+        ):
+            continue
+
+        severity = finding.severity.value
+        icon = {
+            "BLOCKER": "🔴",
+            "CRITICAL": "🔴",
+            "HIGH": "🟠",
+            "MEDIUM": "🟡",
+            "LOW": "🔵",
+            "INFO": "🔵",
+        }.get(severity, "🔵")
+        body = "\n\n".join([
+            f"{icon} **{severity} | {finding.category}**",
+            f"**{finding.title}**",
+            f"**Issue:** {finding.issue}",
+            f"**Recommendation:** {finding.recommendation}",
+            f"**Suggested Fix:** {finding.suggested_fix or 'No safe code suggestion provided.'}",
+        ])
+        comments.append({
+            "path": finding.file,
+            "line": finding.line,
+            "side": "RIGHT",
+            "body": body,
+        })
+    return comments
+
+
+def build_github_review_payload(
+    result: ReviewResult,
+    changed_line_map: dict[str, list[dict[str, int | str]]],
+    commit_id: str | None,
+) -> dict[str, Any]:
+    """Keep the existing summary and add eligible inline comments together."""
+    payload = {
+        "event": "COMMENT",
+        "body": format_review_markdown(result),
+        "commit_id": commit_id,
+    }
+    comments = build_inline_review_comments(result, changed_line_map)
+    if comments:
+        payload["comments"] = comments
+    return payload
 
 
 def call_capgemini(

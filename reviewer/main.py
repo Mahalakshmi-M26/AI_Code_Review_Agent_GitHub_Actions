@@ -14,11 +14,12 @@ from reviewer.review import (
     MAX_REVIEW_INPUT_CHARS,
     REVIEW_TIMEOUT_SECONDS,
     build_review_prompt,
+    build_github_review_payload,
     call_capgemini,
     filter_changed_files,
-    format_review_markdown,
     load_policy,
     validate_result,
+    validate_finding_lines,
 )
 
 
@@ -124,6 +125,7 @@ def main() -> None:
         pr_title=pr_context["title"],
         pr_body=pr_context["body"],
         diff_text=filtered["diff_text"],
+        changed_line_map=filtered["changed_line_map"],
     )
 
     model_name = os.getenv("REVIEW_MODEL", "openai.gpt-5")
@@ -139,18 +141,19 @@ def main() -> None:
         timeout_seconds=timeout_seconds,
     )
 
-    review_result = validate_result(raw_response)
-    formatted_review = format_review_markdown(review_result)
-
+    review_result = validate_finding_lines(
+        validate_result(raw_response),
+        filtered["changed_line_map"],
+    )
     github_request(
         f"/repos/{repo_owner}/{repo_name}/pulls/{pr_context['pr_number']}/reviews",
         token=token,
         method="POST",
-        body={
-            "event": "COMMENT",
-            "body": formatted_review,
-            "commit_id": pr_context["head_sha"],
-        },
+        body=build_github_review_payload(
+            review_result,
+            filtered["changed_line_map"],
+            pr_context["head_sha"],
+        ),
     )
 
     print("AI PR review posted successfully.")

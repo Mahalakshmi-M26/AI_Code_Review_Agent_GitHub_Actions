@@ -97,7 +97,7 @@ The workflow triggers on:
 - `reopened`
 - `synchronize`
 
-The reusable workflow checks out the central reviewer repository for the Python code and the caller repository for the PR under review. The Python reviewer reads the PR diff from GitHub, filters to the relevant files, applies the enterprise policy, calls the Capgemini model, validates the resulting JSON with Pydantic, and posts a single PR-level review comment.
+The reusable workflow checks out the central reviewer repository for the Python code and the caller repository for the PR under review. The Python reviewer reads and bounds the PR diff from GitHub, maps added lines from unified-diff hunk metadata, applies the enterprise policy, calls the Capgemini model, validates the resulting JSON with Pydantic, and submits a GitHub PR review containing the summary and any eligible inline comments.
 
 ## Local test command
 
@@ -107,19 +107,17 @@ pytest
 
 ## Expected review output
 
-The review is posted as a single PR-level summary, not inline comments.
+The review always includes the PR-level summary. Findings whose file and line match a deterministic changed-line entry also receive an inline comment in the same GitHub review submission. Invalid, absent, or deletion-only locations remain in the summary without an inline comment.
 
-## P1 limitations
+## Current limitations
 
-This implementation intentionally does not include:
+This implementation does not yet include:
 
-- inline review comments
 - resolved threads
 - duplicate finding tracking
 - advanced production monitoring
-- multi-language demonstrations
-- custom webhook infrastructure
+- inline placement for deleted-side lines
 
-## Next step after P1
+## Next step after P2
 
-The next implementation step is P2: inline review comments with line-number validation based on the actual diff.
+P3 can add duplicate finding handling and resolved-thread lifecycle management. The reusable workflow architecture and `opened`, `reopened`, and `synchronize` triggers remain unchanged.
