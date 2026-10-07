@@ -49,25 +49,34 @@ class GitHubMCPProvider:
         )
 
     @staticmethod
+    def _tool_field(tool: Any, *names: str) -> Any:
+        for name in names:
+            value = getattr(tool, name, None)
+            if value is not None:
+                return value
+        if isinstance(tool, dict):
+            for name in names:
+                value = tool.get(name)
+                if value is not None:
+                    return value
+        return None
+
+    @staticmethod
     def _normalize_tool(tool: Any) -> dict[str, Any]:
         if isinstance(tool, dict):
             return tool
-
-        normalized: dict[str, Any] = {}
-        for attribute_name, key_name in (
-            ("name", "name"),
-            ("description", "description"),
-            ("input_schema", "inputSchema"),
-            ("output_schema", "outputSchema"),
-        ):
-            value = getattr(tool, attribute_name, None)
-            if value is not None:
-                normalized[key_name] = value
-        return normalized
+        return {
+            "name": GitHubMCPProvider._tool_field(tool, "name"),
+            "description": GitHubMCPProvider._tool_field(tool, "description"),
+            "inputSchema": GitHubMCPProvider._tool_field(tool, "input_schema", "inputSchema"),
+            "outputSchema": GitHubMCPProvider._tool_field(tool, "output_schema", "outputSchema"),
+        }
 
     @classmethod
     def extract_pr_tools(cls, raw_tools: Any) -> list[dict[str, Any]]:
-        tools = raw_tools.get("tools", raw_tools) if isinstance(raw_tools, dict) else raw_tools
+        tools = raw_tools.tools if hasattr(raw_tools, "tools") else raw_tools
+        if isinstance(tools, dict):
+            tools = tools.get("tools", [])
         if not isinstance(tools, list):
             raise RuntimeError("MCP tool discovery returned an unrecognized payload.")
 
@@ -90,6 +99,89 @@ class GitHubMCPProvider:
                 relevant.append(normalized)
         return relevant
 
+    @staticmethod
+    def _extract_server_info(result: Any) -> tuple[str | None, str | None]:
+        if result is None:
+            return None, None
+
+        if hasattr(result, "server_info"):
+            info = result.server_info
+            if info is not None:
+                return str(getattr(info, "name", None) or "unknown"), str(getattr(info, "version", None) or "unknown")
+
+        if hasattr(result, "serverInfo"):
+            info = result.serverInfo
+            if info is not None:
+                return str(getattr(info, "name", None) or "unknown"), str(getattr(info, "version", None) or "unknown")
+
+        if isinstance(result, dict):
+            info = result.get("serverInfo") or result.get("server_info") or {}
+            if isinstance(info, dict):
+                return str(info.get("name") or "unknown"), str(info.get("version") or "unknown")
+
+        return None, None
+
+    async def _run_session(self) -> tuple[Any, list[dict[str, Any]], dict[str, Any]]:
+        params = self.build_server_parameters()
+        try:
+            transport = stdio_client(params)
+        except Exception as exc:  # pragma: no cover - stdio transport creation failed before connecting
+            raise RuntimeError(f"MCP connection failed while starting the official GitHub MCP server: {exc}") from exc
+
+        try:
+            async with transport as (read, write):
+                async with ClientSession(read, write) as session:
+                    self.session = session
+                    try:
+                        init_result = await session.initialize()
+                    except Exception as exc:  # pragma: no cover - session startup is a distinct failure class
+                        raise RuntimeError(f"MCP initialization failed: {exc}") from exc
+
+                    server_name, server_version = self._extract_server_info(init_result)
+                    self.server_name = server_name or "unknown"
+                    self.server_version = server_version or "unknown"
+                    print("[MCP] Connected")
+                    print("[MCP] Server name:")
+                    print(self.server_name)
+                    print("[MCP] Server version:")
+                    print(self.server_version)
+
+                    try:
+                        tools_response = await session.list_tools()
+                    except Exception as exc:  # pragma: no cover - tool discovery is explicit failure reporting
+                        raise RuntimeError(f"MCP tool discovery failed while calling list_tools(): {exc}") from exc
+
+                    response_type = type(tools_response)
+                    print("[MCP] list_tools response type:")
+                    print(f"{response_type.__module__}.{response_type.__qualname__}")
+                    if hasattr(tools_response, "tools"):
+                        attr_names = [name for name in dir(tools_response) if not name.startswith("_") and name in {"tools", "meta", "ttl_ms", "cache_scope", "next_cursor", "result_type"}]
+                        print("[MCP] list_tools response attributes:")
+                        print(attr_names)
+
+                    raw_tools = getattr(tools_response, "tools", None)
+                    if raw_tools is None and isinstance(tools_response, dict):
+                        raw_tools = tools_response.get("tools", [])
+                    if not isinstance(raw_tools, list):
+                        raw_tools = []
+
+                    print("[MCP] Discovering tools...")
+                    for tool in raw_tools:
+                        normalized = self._normalize_tool(tool)
+                        print("[MCP] Tool:")
+                        print(normalized.get("name"))
+                        print("[MCP] Description:")
+                        print(normalized.get("description"))
+                        print("[MCP] Input schema:")
+                        print(normalized.get("inputSchema") or normalized.get("input_schema"))
+
+                    tools = self.extract_pr_tools(tools_response)
+                    return init_result, tools, {"server_name": self.server_name, "server_version": self.server_version}
+        except RuntimeError:
+            raise
+        except Exception as exc:  # pragma: no cover - stdio transport failed before session init
+            raise RuntimeError(f"MCP connection failed while starting the official GitHub MCP server: {exc}") from exc
+
     async def initialize(self) -> dict[str, Any]:
         print("[MCP] Starting official GitHub MCP Server")
         print("[MCP] Transport: stdio")
@@ -99,67 +191,18 @@ class GitHubMCPProvider:
         print("[MCP] Toolsets:")
         print(",".join(self.toolsets))
 
-        params = self.build_server_parameters()
-        try:
-            transport = stdio_client(params)
-        except Exception as exc:  # pragma: no cover - stdio transport creation failed before connecting
-            raise RuntimeError(f"MCP connection failed while starting the official GitHub MCP server: {exc}") from exc
-
-        try:
-            async with transport as (read, write):
-                try:
-                    async with ClientSession(read, write) as session:
-                        self.session = session
-                        result = await session.initialize()
-                        result_dict = result.model_dump() if hasattr(result, "model_dump") else dict(result)
-                        self.server_name = str(result_dict.get("serverInfo", {}).get("name") or "unknown")
-                        self.server_version = str(result_dict.get("serverInfo", {}).get("version") or "unknown")
-                        print("[MCP] Connected")
-                        print("[MCP] Server name:")
-                        print(self.server_name)
-                        print("[MCP] Server version:")
-                        print(self.server_version)
-                        return result_dict
-                except Exception as exc:  # pragma: no cover - session startup is a distinct failure class
-                    raise RuntimeError(f"MCP initialization failed: {exc}") from exc
-        except RuntimeError:
-            raise
-        except Exception as exc:  # pragma: no cover - stdio transport failed before session init
-            raise RuntimeError(f"MCP connection failed while starting the official GitHub MCP server: {exc}") from exc
+        init_result, _, _ = await self._run_session()
+        if hasattr(init_result, "model_dump"):
+            return init_result.model_dump()
+        return dict(init_result)
 
     async def discover_tools(self) -> list[dict[str, Any]]:
-        try:
-            params = self.build_server_parameters()
-            transport = stdio_client(params)
-            async with transport as (read, write):
-                async with ClientSession(read, write) as session:
-                    await session.initialize()
-                    tools_response = await session.list_tools()
-                    tools = self.extract_pr_tools(tools_response)
-                    print("[MCP] Discovering tools...")
-                    print("[MCP] PR-related tools discovered:")
-                    for tool in tools:
-                        print("[MCP] Tool:")
-                        print(tool.get("name"))
-                        print("[MCP] Description:")
-                        print(tool.get("description"))
-                        print("[MCP] Input schema:")
-                        print(tool.get("inputSchema") or tool.get("input_schema"))
-                    return tools
-        except RuntimeError:
-            raise
-        except Exception as exc:  # pragma: no cover - expanded for clearer runtime error
-            raise RuntimeError(f"MCP tool discovery failed: {exc}") from exc
+        _, tools, _ = await self._run_session()
+        return tools
 
     async def run_connectivity_check(self) -> dict[str, Any]:
-        try:
-            info = await self.initialize()
-            tools = await self.discover_tools()
-            return {"serverInfo": info.get("serverInfo", {}), "tools": tools}
-        except RuntimeError:
-            raise
-        except Exception as exc:  # pragma: no cover - defensive guard
-            raise RuntimeError(f"MCP connectivity check failed: {exc}") from exc
+        init_result, tools, server_info = await self._run_session()
+        return {"serverInfo": init_result.model_dump() if hasattr(init_result, "model_dump") else dict(init_result), "tools": tools, "server_info": server_info}
 
 
 async def live_discovery() -> None:
@@ -179,18 +222,18 @@ async def live_discovery() -> None:
     print("GitHub Actions GITHUB_TOKEN")
 
     provider = GitHubMCPProvider(token=token)
-    result = await provider.initialize()
-    tool_result = await provider.discover_tools()
+    init_result, tools, _ = await provider._run_session()
     print("[MCP] MCP discovery completed")
+    server_info = init_result.model_dump() if hasattr(init_result, "model_dump") else dict(init_result)
     print(json.dumps({
-        "serverInfo": result.get("serverInfo", {}),
+        "serverInfo": server_info,
         "tools": [
             {
                 "name": tool.get("name"),
                 "description": tool.get("description"),
                 "inputSchema": tool.get("inputSchema") or tool.get("input_schema"),
             }
-            for tool in tool_result
+            for tool in tools
         ],
     }, indent=2, default=str))
 

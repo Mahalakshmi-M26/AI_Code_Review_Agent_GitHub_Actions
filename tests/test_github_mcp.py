@@ -107,6 +107,9 @@ def test_connection_failure_raises_clear_error(monkeypatch):
 
 def test_initialization_failure_raises_clear_error(monkeypatch):
     class FakeSession:
+        def __init__(self, *args, **kwargs):
+            pass
+
         async def __aenter__(self):
             return self
 
@@ -136,6 +139,9 @@ def test_initialization_failure_raises_clear_error(monkeypatch):
 
 def test_tool_discovery_failure_raises_clear_error(monkeypatch):
     class FakeSession:
+        def __init__(self, *args, **kwargs):
+            pass
+
         async def __aenter__(self):
             return self
 
