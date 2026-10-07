@@ -59,6 +59,18 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
+      - name: Verify Docker is available
+        run: docker --version
+
+      - name: Pull official GitHub MCP server image
+        run: docker pull ghcr.io/github/github-mcp-server
+
+      - name: Live GitHub MCP discovery
+        working-directory: central-reviewer
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: python -m reviewer.providers.github_mcp
+
       - name: Run AI PR review
         working-directory: central-reviewer
         env:
