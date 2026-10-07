@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import sys
@@ -20,6 +21,7 @@ from reviewer.review import (
     validate_result,
     validate_finding_lines,
 )
+from reviewer.providers.github_mcp import GitHubMCPProvider
 
 
 def require_env(name: str) -> str:
@@ -101,12 +103,17 @@ def main() -> None:
     pr_context = ensure_pr_context(event)
     repo_owner, repo_name = pr_context["repo_slug"].split("/", 1)
 
-    files_payload = github_request(
-        f"/repos/{repo_owner}/{repo_name}/pulls/{pr_context['pr_number']}/files",
-        token=token,
+    print("[CONTEXT] Repository:")
+    print(pr_context["repo_slug"])
+    print("[CONTEXT] Pull Request:")
+    print(f"#{pr_context['pr_number']}")
+    files_payload = asyncio.run(
+        GitHubMCPProvider(token=token).get_pull_request_files(
+            owner=repo_owner,
+            repo=repo_name,
+            pull_number=pr_context["pr_number"],
+        )
     )
-    if not isinstance(files_payload, list):
-        raise RuntimeError("GitHub returned an unexpected payload for changed files.")
 
     filtered = filter_changed_files(
         files_payload,
@@ -114,6 +121,10 @@ def main() -> None:
         max_file_diff_chars=int(os.getenv("MAX_FILE_DIFF_CHARS", str(MAX_FILE_DIFF_CHARS))),
         max_review_input_chars=int(os.getenv("MAX_REVIEW_INPUT_CHARS", str(MAX_REVIEW_INPUT_CHARS))),
     )
+    print("[FILTER] Reviewable files:")
+    print(len(filtered["files_reviewed"]))
+    print("[DIFF] Bounded diff generated")
+    print("[DIFF] Added-line mapping generated")
 
     if not filtered["files_reviewed"] or not filtered["diff_text"].strip():
         raise RuntimeError("No meaningful changed files were available for review after filtering.")
@@ -131,6 +142,7 @@ def main() -> None:
     base_url = os.getenv("OPENAI_BASE_URL", "https://openai.generative.engine.capgemini.com/v1")
     timeout_seconds = int(os.getenv("REVIEW_TIMEOUT_SECONDS", str(REVIEW_TIMEOUT_SECONDS)))
 
+    print("[AI] Calling Capgemini Generative Engine")
     raw_response = call_capgemini(
         policy_text=policy_text,
         user_prompt=prompt,
@@ -144,6 +156,7 @@ def main() -> None:
         validate_result(raw_response),
         filtered["changed_line_map"],
     )
+    print("[REST-WRITE] Publishing review using existing temporary REST path")
     github_request(
         f"/repos/{repo_owner}/{repo_name}/pulls/{pr_context['pr_number']}/reviews",
         token=token,

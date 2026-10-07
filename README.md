@@ -48,7 +48,7 @@ This is the bearer token used for the Capgemini OpenAI-compatible endpoint.
 
 ## Required GitHub token
 
-The workflow uses the built-in GitHub token for API calls to create a PR review. It is passed to the runner as `GITHUB_TOKEN`.
+The workflow passes the built-in GitHub token to the runner as `GITHUB_TOKEN`. GitHub Pull Request changed-file retrieval uses the official GitHub MCP Server. Pull Request review publishing still uses the GitHub REST Reviews API.
 
 ## Permissions
 
@@ -101,7 +101,7 @@ The workflow triggers on:
 - `reopened`
 - `synchronize`
 
-The reusable workflow checks out the central reviewer repository for the Python code and the caller repository for the PR under review. It is used by `ai-code-review-demo` and `pets-workshop`. The reviewer reads and bounds the PR diff from GitHub, maps added lines from unified-diff hunk metadata, enriches the model prompt with those exact lines, applies the enterprise policy, calls the Capgemini Generative Engine, validates the JSON with Pydantic, and submits a GitHub PR review containing the summary and any eligible inline comments. Python, JavaScript, and Java PR changes have been validated through this shared review flow; it does not invoke language-specific compilers or test runners.
+The reusable workflow checks out the central reviewer repository for the Python code and the caller repository for the PR under review. It is used by `ai-code-review-demo` and `pets-workshop`. The reviewer retrieves changed files through the official GitHub MCP Server, bounds the unified diff, maps added lines from hunk metadata, enriches the model prompt with those exact lines, applies the enterprise policy, calls the Capgemini Generative Engine, and validates the JSON with Pydantic. It then publishes the summary and eligible inline comments through the existing GitHub REST Reviews API. Python, JavaScript, and Java PR changes have been validated through this shared review flow; it does not invoke language-specific compilers or test runners.
 
 ## Local test command
 
@@ -121,7 +121,3 @@ This implementation does not yet include:
 - duplicate finding tracking
 - advanced production monitoring
 - inline placement for deleted-side lines
-
-## Next step after P2
-
-P2 deterministic line mapping and inline comments are implemented. P3 can add duplicate finding handling and resolved-thread lifecycle management. The reusable workflow architecture and `opened`, `reopened`, and `synchronize` triggers remain unchanged.
