@@ -444,6 +444,61 @@ def test_get_diff_paths_with_spaces_match_get_files_metadata(monkeypatch):
     assert files == [{"filename": "src/A file.java", "patch": "@@ -1 +1,2 @@\n old\n+new"}]
 
 
+def test_rename_only_metadata_returns_empty_patch_with_explicit_skip_reason(monkeypatch):
+    calls = []
+    full_diff = (
+        "diff --git a/.github/workflows/gradle-build.yml b/.github/gradle-build.yml\n"
+        "similarity index 100%\n"
+        "rename from .github/workflows/gradle-build.yml\n"
+        "rename to .github/gradle-build.yml\n"
+    )
+    metadata = [{
+        "filename": ".github/gradle-build.yml",
+        "status": "renamed",
+    }]
+    install_fake_mcp(monkeypatch, [files_result(metadata), text_result(full_diff)], calls)
+
+    files = asyncio.run(GitHubMCPProvider(token="abc123").get_pull_request_files("octo", "demo", 42))
+    filtered = filter_changed_files(files)
+
+    assert files == [{
+        "filename": ".github/gradle-build.yml",
+        "status": "renamed",
+        "patch": "",
+        "review_skip_reason": "rename-only / no content changes",
+    }]
+    assert filtered["files_reviewed"] == []
+    assert filtered["files_skipped"] == [".github/gradle-build.yml (no patch)"]
+
+
+def test_mixed_metadata_only_and_source_files_keeps_source_patch_reviewable(monkeypatch):
+    calls = []
+    full_diff = (
+        "diff --git a/.github/workflows/gradle-build.yml b/.github/gradle-build.yml\n"
+        "similarity index 100%\n"
+        "rename from .github/workflows/gradle-build.yml\n"
+        "rename to .github/gradle-build.yml\n"
+        "diff --git a/src/Main.java b/src/Main.java\n"
+        "--- a/src/Main.java\n+++ b/src/Main.java\n"
+        "@@ -1 +1,2 @@\n old\n+new\n"
+        "diff --git a/pom.xml b/pom.xml\nold mode 100644\nnew mode 100755\n"
+    )
+    metadata = [
+        {"filename": ".github/gradle-build.yml", "status": "renamed"},
+        {"filename": "src/Main.java", "status": "modified"},
+        {"filename": "pom.xml", "status": "modified"},
+    ]
+    install_fake_mcp(monkeypatch, [files_result(metadata), text_result(full_diff)], calls)
+
+    files = asyncio.run(GitHubMCPProvider(token="abc123").get_pull_request_files("octo", "demo", 42))
+    filtered = filter_changed_files(files)
+
+    assert filtered["files_reviewed"] == ["src/Main.java"]
+    assert filtered["changed_line_map"] == {"src/Main.java": [{"line": 2, "content": "new"}]}
+    assert files[0]["review_skip_reason"] == "rename-only / no content changes"
+    assert files[2]["review_skip_reason"] == "metadata-only / no content changes"
+
+
 def test_get_diff_metadata_and_section_count_mismatch_fails_clearly(monkeypatch):
     calls = []
     full_diff = "diff --git a/src/A.java b/src/A.java\n--- a/src/A.java\n+++ b/src/A.java\n@@ -0,0 +1 @@\n+new"

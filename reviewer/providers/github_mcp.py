@@ -252,7 +252,13 @@ class GitHubMCPProvider:
                 patch = block[hunk_start.start():].rstrip("\r\n")
             else:
                 patch = ""
-            files.append({"filename": filename, "patch": patch})
+            rename_from = re.search(r"(?m)^rename from (.+)$", block)
+            rename_to = re.search(r"(?m)^rename to (.+)$", block)
+            files.append({
+                "filename": filename,
+                "patch": patch,
+                "rename_only": not hunk_start and rename_from is not None and rename_to is not None,
+            })
         return files
 
     @classmethod
@@ -450,6 +456,13 @@ class GitHubMCPProvider:
             normalized_item = dict(metadata_item)
             normalized_item["filename"] = str(metadata_item["filename"]).strip()
             normalized_item["patch"] = diff_file["patch"]
+            if not diff_file["patch"]:
+                if str(metadata_item.get("status", "")).lower() == "renamed" and diff_file["rename_only"]:
+                    reason = "rename-only / no content changes"
+                else:
+                    reason = "metadata-only / no content changes"
+                normalized_item["review_skip_reason"] = reason
+                print(f"[MCP] Non-reviewable change: {normalized_item['filename']} - {reason}")
             normalized.append(normalized_item)
         return normalized
 
@@ -578,8 +591,8 @@ class GitHubMCPProvider:
                                             print("[MCP] Normalizing unified diff into per-file patches")
                                             self._log_diff_normalization_diagnostics(diff_text, files)
                                             normalized = self._normalize_diff_files(diff_text, files)
-                                            if not normalized or not any(item["patch"].strip() for item in normalized):
-                                                raise RuntimeError("Normalization produced no usable file patches.")
+                                            if not normalized:
+                                                raise RuntimeError("Normalization produced no file entries.")
                                         except Exception as exc:
                                             stage = "MCP diff normalization"
                                             print(f"[MCP] {stage} failed")

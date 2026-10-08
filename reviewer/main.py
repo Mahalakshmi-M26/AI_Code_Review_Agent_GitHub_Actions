@@ -65,14 +65,26 @@ def ensure_pr_context(event: dict) -> dict:
     }
 
 
+def build_metadata_only_advisory(files: list[dict]) -> str:
+    skipped_files = "\n".join(
+        f"- {str(item['filename']).replace('`', '\\`').replace(chr(10), ' ')} - {item['review_skip_reason']}"
+        for item in files
+    )
+    return (
+        "# AI Code Review\n\n"
+        "No reviewable code changes detected.\n\n"
+        "This Pull Request contains file metadata changes such as pure renames, but no changed source-code hunks "
+        "were available for AI analysis.\n\n"
+        "Files skipped:\n\n"
+        f"{skipped_files}\n\n"
+        "Human approval remains required."
+    )
+
+
 def main() -> None:
     token = os.getenv("GITHUB_TOKEN")
     if not token:
         raise RuntimeError("Missing GITHUB_TOKEN. Ensure the workflow exposes the GitHub token to the runner.")
-
-    api_key = os.getenv("GEP_API_KEY")
-    if not api_key:
-        raise RuntimeError("Missing GEP_API_KEY. Configure the secret in GitHub before running reviews.")
 
     event = load_event()
     pr_context = ensure_pr_context(event)
@@ -103,7 +115,31 @@ def main() -> None:
     print("[DIFF] Added-line mapping generated")
 
     if not filtered["files_reviewed"] or not filtered["diff_text"].strip():
+        metadata_only_files = [
+            item for item in files_payload
+            if not (item.get("patch") or "").strip() and item.get("review_skip_reason")
+        ]
+        if files_payload and len(metadata_only_files) == len(files_payload):
+            advisory_payload = {
+                "body": build_metadata_only_advisory(metadata_only_files),
+                "commit_id": pr_context["head_sha"],
+                "comments": [],
+            }
+            asyncio.run(
+                github_provider.post_review(
+                    owner=repo_owner,
+                    repo=repo_name,
+                    pull_number=pr_context["pr_number"],
+                    review_payload=advisory_payload,
+                ),
+            )
+            print("AI PR REVIEW POSTED SUCCESSFULLY")
+            return
         raise RuntimeError("No meaningful changed files were available for review after filtering.")
+
+    api_key = os.getenv("GEP_API_KEY")
+    if not api_key:
+        raise RuntimeError("Missing GEP_API_KEY. Configure the secret in GitHub before running reviews.")
 
     policy_text = load_policy()
     prompt = build_review_prompt(
