@@ -340,7 +340,19 @@ def test_get_diff_splits_modified_new_renamed_and_deleted_files(monkeypatch):
         "diff --git a/old.py b/renamed.py\nsimilarity index 100%\nrename from old.py\nrename to renamed.py\n--- a/old.py\n+++ b/renamed.py\n@@ -1 +1 @@\n same\n"
         "diff --git a/deleted.py b/deleted.py\ndeleted file mode 100644\n--- a/deleted.py\n+++ /dev/null\n@@ -1 +0,0 @@\n-gone\n"
     )
-    install_fake_mcp(monkeypatch, [files_result([]), text_result(full_diff)], calls)
+    install_fake_mcp(
+        monkeypatch,
+        [
+            files_result([
+                {"filename": "modified.py"},
+                {"filename": "new.py"},
+                {"filename": "renamed.py"},
+                {"filename": "deleted.py"},
+            ]),
+            text_result(full_diff),
+        ],
+        calls,
+    )
 
     files = asyncio.run(GitHubMCPProvider(token="abc123").get_pull_request_files("octo", "demo", 9))
 
@@ -352,7 +364,7 @@ def test_get_diff_parses_structured_diff_text(monkeypatch):
     calls = []
     full_diff = "diff --git a/new.py b/new.py\n--- /dev/null\n+++ b/new.py\n@@ -0,0 +1 @@\n+created"
     result = CallToolResult(content=[], structured_content={"diff": full_diff})
-    install_fake_mcp(monkeypatch, [files_result([]), result], calls)
+    install_fake_mcp(monkeypatch, [files_result([{"filename": "new.py"}]), result], calls)
 
     files = asyncio.run(GitHubMCPProvider(token="abc123").get_pull_request_files("octo", "demo", 9))
 
@@ -360,12 +372,140 @@ def test_get_diff_parses_structured_diff_text(monkeypatch):
     assert "+created" in files[0]["patch"]
 
 
+def test_get_diff_parses_json_wrapped_diff_from_text_content(monkeypatch):
+    calls = []
+    full_diff = "diff --git a/new.py b/new.py\n--- /dev/null\n+++ b/new.py\n@@ -0,0 +1 @@\n+created"
+    install_fake_mcp(
+        monkeypatch,
+        [files_result([{"filename": "new.py"}]), text_result(json.dumps({"diff": full_diff}))],
+        calls,
+    )
+
+    files = asyncio.run(GitHubMCPProvider(token="abc123").get_pull_request_files("octo", "demo", 9))
+
+    assert files == [{"filename": "new.py", "patch": "@@ -0,0 +1 @@\n+created"}]
+
+
 def test_missing_patch_and_unparseable_diff_fails_clearly(monkeypatch):
     calls = []
     install_fake_mcp(monkeypatch, [files_result([{"filename": "src/app.py"}]), text_result("not a unified diff")], calls)
 
-    with pytest.raises(RuntimeError, match="no parseable file diffs"):
+    with pytest.raises(RuntimeError, match="diff normalization failure.*zero recognized file sections"):
         asyncio.run(GitHubMCPProvider(token="abc123").get_pull_request_files("octo", "demo", 9))
+
+
+def test_two_file_get_diff_uses_metadata_and_preserves_added_line_numbers(monkeypatch):
+    calls = []
+    metadata = [
+        {"filename": "src/A.java", "status": "modified"},
+        {"filename": "src/B.java", "status": "modified"},
+    ]
+    full_diff = (
+        "diff --git a/src/A.java b/src/A.java\n"
+        "index 1111111..2222222 100644\n"
+        "--- a/src/A.java\n+++ b/src/A.java\n"
+        "@@ -1,2 +1,2 @@\n-old\n+new\n keep\n"
+        "diff --git a/src/B.java b/src/B.java\n"
+        "index 3333333..4444444 100644\n"
+        "--- a/src/B.java\n+++ b/src/B.java\n"
+        "@@ -10 +10,2 @@\n context\n+added\n"
+    )
+    install_fake_mcp(monkeypatch, [files_result(metadata), text_result(full_diff)], calls)
+
+    normalized = asyncio.run(GitHubMCPProvider(token="abc123").get_pull_request_files("octo", "demo", 42))
+    filtered = filter_changed_files(normalized)
+
+    assert [item["filename"] for item in normalized] == ["src/A.java", "src/B.java"]
+    assert normalized[0]["patch"] == "@@ -1,2 +1,2 @@\n-old\n+new\n keep"
+    assert normalized[1]["patch"] == "@@ -10 +10,2 @@\n context\n+added"
+    assert filtered["files_reviewed"] == ["src/A.java", "src/B.java"]
+    assert filtered["changed_line_map"] == {
+        "src/A.java": [{"line": 1, "content": "new"}],
+        "src/B.java": [{"line": 11, "content": "added"}],
+    }
+    assert [call[1]["method"] for call in calls] == ["get_files", "get_diff"]
+
+
+def test_get_diff_paths_with_spaces_match_get_files_metadata(monkeypatch):
+    calls = []
+    full_diff = (
+        'diff --git "a/src/A file.java" "b/src/A file.java"\n'
+        '--- "a/src/A file.java"\n+++ "b/src/A file.java"\n'
+        "@@ -1 +1,2 @@\n old\n+new\n"
+    )
+    install_fake_mcp(
+        monkeypatch,
+        [files_result([{"filename": "src/A file.java"}]), text_result(full_diff)],
+        calls,
+    )
+
+    files = asyncio.run(GitHubMCPProvider(token="abc123").get_pull_request_files("octo", "demo", 42))
+
+    assert files == [{"filename": "src/A file.java", "patch": "@@ -1 +1,2 @@\n old\n+new"}]
+
+
+def test_get_diff_metadata_and_section_count_mismatch_fails_clearly(monkeypatch):
+    calls = []
+    full_diff = "diff --git a/src/A.java b/src/A.java\n--- a/src/A.java\n+++ b/src/A.java\n@@ -0,0 +1 @@\n+new"
+    install_fake_mcp(
+        monkeypatch,
+        [files_result([{"filename": "src/A.java"}, {"filename": "src/B.java"}]), text_result(full_diff)],
+        calls,
+    )
+
+    with pytest.raises(RuntimeError, match="metadata reported 2 files but get_diff contained 1 file sections"):
+        asyncio.run(GitHubMCPProvider(token="abc123").get_pull_request_files("octo", "demo", 42))
+
+
+def test_get_diff_filename_mismatch_fails_instead_of_reviewing_incomplete_data(monkeypatch):
+    calls = []
+    full_diff = "diff --git a/src/Other.java b/src/Other.java\n--- a/src/Other.java\n+++ b/src/Other.java\n@@ -0,0 +1 @@\n+new"
+    install_fake_mcp(
+        monkeypatch,
+        [files_result([{"filename": "src/A.java"}]), text_result(full_diff)],
+        calls,
+    )
+
+    with pytest.raises(RuntimeError, match="did not match get_files metadata"):
+        asyncio.run(GitHubMCPProvider(token="abc123").get_pull_request_files("octo", "demo", 42))
+
+
+def test_get_diff_empty_or_missing_text_fails_as_parse_error(monkeypatch):
+    calls = []
+    install_fake_mcp(monkeypatch, [files_result([]), CallToolResult(content=[])], calls)
+
+    with pytest.raises(RuntimeError, match="MCP get_diff parse failure.*no structured content or text content"):
+        asyncio.run(GitHubMCPProvider(token="abc123").get_pull_request_files("octo", "demo", 42))
+
+
+def test_get_diff_tool_error_is_distinguished_from_parse_failure(monkeypatch):
+    calls = []
+    install_fake_mcp(monkeypatch, [files_result([]), CallToolResult(content=[], is_error=True)], calls)
+
+    with pytest.raises(RuntimeError, match="MCP get_diff tool failure"):
+        asyncio.run(GitHubMCPProvider(token="abc123").get_pull_request_files("octo", "demo", 42))
+
+
+def test_diff_normalization_failure_logs_type_and_message_before_context_exit(monkeypatch, capsys):
+    calls = []
+    install_fake_mcp(monkeypatch, [files_result([]), text_result("not a diff")], calls)
+
+    with pytest.raises(RuntimeError, match="MCP diff normalization failure") as error:
+        asyncio.run(GitHubMCPProvider(token="abc123").get_pull_request_files("octo", "demo", 42))
+
+    output = capsys.readouterr().out
+    assert "[MCP] get_diff result type:" in output
+    assert "mcp_types._types.CallToolResult" in output
+    assert "[MCP] structured_content present:" in output
+    assert "[MCP] content item count:" in output
+    assert "[MCP] content[0] text length: 10" in output
+    assert "[MCP] Unified diff text source:" in output
+    assert "content[0].text" in output
+    assert "[MCP] Unified diff starts with diff header:" in output
+    assert "[MCP] MCP diff normalization failed" in output
+    assert "Exception type: RuntimeError" in output
+    assert "Exception message: MCP get_diff response contained zero recognized file sections." in output
+    assert "unhandled errors in a TaskGroup" not in str(error.value)
 
 
 def test_mcp_tool_error_fails_without_rest_fallback(monkeypatch):

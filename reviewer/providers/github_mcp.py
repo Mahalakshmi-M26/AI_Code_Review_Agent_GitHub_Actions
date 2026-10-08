@@ -186,15 +186,6 @@ class GitHubMCPProvider:
 
     @staticmethod
     def _diff_filename(header: str) -> str | None:
-        for prefix in ("+++ ", "--- "):
-            marker = header.find(prefix)
-            if marker >= 0:
-                path = header[marker + len(prefix):].splitlines()[0].strip()
-                if path == "/dev/null":
-                    continue
-                if path.startswith(("a/", "b/")):
-                    return path[2:]
-
         first_line = header.splitlines()[0] if header else ""
         try:
             parts = shlex.split(first_line)
@@ -202,19 +193,55 @@ class GitHubMCPProvider:
             parts = []
         if len(parts) >= 4:
             new_path = parts[3]
-            old_path = parts[2]
             if new_path != "/dev/null" and new_path.startswith("b/"):
                 return new_path[2:]
-            if old_path != "/dev/null" and old_path.startswith("a/"):
-                return old_path[2:]
-        match = re.match(r"^diff --git a/(.+?) b/(.+)$", first_line)
-        return match.group(2) if match else None
+        rename_to = re.search(r"(?m)^rename to (.+)$", header)
+        if rename_to:
+            try:
+                path_parts = shlex.split(rename_to.group(1))
+            except ValueError:
+                path_parts = []
+            if path_parts:
+                return path_parts[0]
+
+        for prefix in ("+++ ", "--- "):
+            match = re.search(rf"(?m)^{re.escape(prefix)}(.+)$", header)
+            if not match:
+                continue
+            try:
+                path_parts = shlex.split(match.group(1))
+            except ValueError:
+                path_parts = []
+            if not path_parts or path_parts[0] == "/dev/null":
+                continue
+            path = path_parts[0]
+            if path.startswith(("a/", "b/")):
+                return path[2:]
+            return path
+
+        if len(parts) >= 3 and parts[2] != "/dev/null" and parts[2].startswith("a/"):
+            return parts[2][2:]
+        return None
+
+    @staticmethod
+    def _normalize_diff_path(path: str) -> str:
+        candidate = path.strip()
+        try:
+            parsed = shlex.split(candidate)
+        except ValueError:
+            parsed = []
+        if len(parsed) == 1:
+            candidate = parsed[0]
+        if candidate.startswith(("a/", "b/")):
+            candidate = candidate[2:]
+        return candidate.replace("\\", "/")
 
     @classmethod
     def _parse_unified_diff(cls, diff_text: str) -> list[dict[str, str]]:
-        blocks = re.split(r"(?m)(?=^diff --git )", diff_text.strip())
+        blocks = re.split(r"(?m)(?=^diff --git )", diff_text)
         files: list[dict[str, str]] = []
         for block in blocks:
+            block = block.lstrip("\r\n")
             if not block.startswith("diff --git "):
                 continue
             filename = cls._diff_filename(block)
@@ -222,29 +249,118 @@ class GitHubMCPProvider:
                 continue
             hunk_start = re.search(r"(?m)^@@ ", block)
             if hunk_start:
-                patch = block[hunk_start.start():].strip()
+                patch = block[hunk_start.start():].rstrip("\r\n")
             else:
                 patch = ""
             files.append({"filename": filename, "patch": patch})
         return files
 
     @classmethod
-    def _parse_diff_result(cls, result: Any) -> list[dict[str, str]]:
-        if cls._result_error(result):
-            raise RuntimeError("MCP pull_request_read(method=get_diff) returned a tool error.")
-        payload = cls._result_content(result)
+    def _extract_diff_text(cls, result: Any) -> tuple[str, str]:
+        if isinstance(result, dict):
+            structured = result.get("structured_content", result.get("structuredContent"))
+            content = result.get("content", [])
+        else:
+            structured = getattr(result, "structured_content", getattr(result, "structuredContent", None))
+            content = getattr(result, "content", [])
+
+        source = "structured_content"
+        if structured is not None:
+            payload = structured
+        else:
+            text_parts = []
+            text_indexes = []
+            for index, item in enumerate(content or []):
+                text = item.get("text") if isinstance(item, dict) else getattr(item, "text", None)
+                if isinstance(text, str):
+                    text_parts.append(text)
+                    text_indexes.append(index)
+            if not text_parts:
+                raise RuntimeError("MCP get_diff response contained no structured content or text content.")
+            payload = "\n".join(text_parts)
+            source = ",".join(f"content[{index}].text" for index in text_indexes)
+
         if isinstance(payload, str):
             diff_text = payload
+            try:
+                decoded = json.loads(payload)
+            except json.JSONDecodeError:
+                decoded = None
+            if isinstance(decoded, dict):
+                candidate = decoded.get("diff") or decoded.get("text")
+                if isinstance(candidate, str):
+                    diff_text = candidate
+                    source = f"{source} JSON diff field"
         elif isinstance(payload, dict):
-            diff_text = payload.get("diff")
+            diff_text = payload.get("diff") or payload.get("text")
         else:
             diff_text = None
         if not isinstance(diff_text, str) or not diff_text.strip():
             raise RuntimeError("MCP get_diff response did not contain unified diff text.")
-        files = cls._parse_unified_diff(diff_text)
-        if not files:
-            raise RuntimeError("MCP get_diff response contained no parseable file diffs.")
-        return files
+        return diff_text, source
+
+    @classmethod
+    def _normalize_diff_files(
+        cls,
+        diff_text: str,
+        metadata: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        diff_files = cls._parse_unified_diff(diff_text)
+        if not diff_files:
+            raise RuntimeError("MCP get_diff response contained zero recognized file sections.")
+        if len(metadata) != len(diff_files):
+            raise RuntimeError(
+                f"MCP get_files metadata reported {len(metadata)} files but get_diff contained "
+                f"{len(diff_files)} file sections."
+            )
+        if not metadata:
+            return diff_files
+
+        metadata_by_path = {
+            cls._normalize_diff_path(str(item["filename"])): item
+            for item in metadata
+        }
+        normalized: list[dict[str, Any]] = []
+        for diff_file in diff_files:
+            diff_path = cls._normalize_diff_path(diff_file["filename"])
+            metadata_item = metadata_by_path.get(diff_path)
+            if metadata_item is None:
+                raise RuntimeError(
+                    f"MCP get_diff file {diff_file['filename']!r} did not match get_files metadata."
+                )
+            normalized_item = dict(metadata_item)
+            normalized_item["filename"] = str(metadata_item["filename"]).strip()
+            normalized_item["patch"] = diff_file["patch"]
+            normalized.append(normalized_item)
+        return normalized
+
+    @staticmethod
+    def _log_diff_result_shape(result: Any) -> None:
+        if isinstance(result, dict):
+            structured = result.get("structured_content", result.get("structuredContent"))
+            content = result.get("content", [])
+        else:
+            structured = getattr(result, "structured_content", getattr(result, "structuredContent", None))
+            content = getattr(result, "content", [])
+        print("[MCP] get_diff result type:")
+        print(f"{type(result).__module__}.{type(result).__qualname__}")
+        print("[MCP] structured_content present:")
+        print("true" if structured is not None else "false")
+        print("[MCP] content item count:")
+        print(len(content or []))
+        for index, item in enumerate(content or []):
+            item_type = item.get("type") if isinstance(item, dict) else getattr(item, "type", None)
+            text = item.get("text") if isinstance(item, dict) else getattr(item, "text", None)
+            print(f"[MCP] content[{index}] type: {item_type or type(item).__name__}")
+            print(f"[MCP] content[{index}] text present: {'true' if isinstance(text, str) else 'false'}")
+            print(f"[MCP] content[{index}] text length: {len(text) if isinstance(text, str) else 0}")
+
+    @staticmethod
+    def _exception_detail(exc: BaseException) -> str:
+        if isinstance(exc, BaseExceptionGroup):
+            nested = "; ".join(GitHubMCPProvider._exception_detail(item) for item in exc.exceptions)
+            return f"{type(exc).__name__}: {exc}; inner: {nested}"
+        return f"{type(exc).__name__}: {exc}"
 
     @staticmethod
     def _read_arguments(owner: str, repo: str, pull_number: int, method: str, page: int | None = None) -> dict[str, Any]:
@@ -266,6 +382,8 @@ class GitHubMCPProvider:
         print("[MCP] Starting official GitHub MCP Server")
         print("[MCP] Reading Pull Request changed files")
         params = self.build_server_parameters()
+        failure: RuntimeError | None = None
+        normalized: list[dict[str, Any]] | None = None
         try:
             transport = stdio_client(params)
             async with transport as (read, write):
@@ -274,64 +392,99 @@ class GitHubMCPProvider:
                     try:
                         await session.initialize()
                     except Exception as exc:
-                        raise RuntimeError(f"MCP initialization failed: {exc}") from exc
+                        failure = RuntimeError(f"MCP connection initialization failure: {self._exception_detail(exc)}")
 
-                    print("[MCP] Tool:")
-                    print("pull_request_read")
-                    print("[MCP] Method:")
-                    print("get_files")
                     files: list[dict[str, Any]] = []
+                    if failure is None:
+                        print("[MCP] Tool:")
+                        print("pull_request_read")
+                        print("[MCP] Method:")
+                        print("get_files")
                     page = 1
-                    while True:
+                    while failure is None:
                         try:
                             result = await session.call_tool(
                                 "pull_request_read",
                                 self._read_arguments(owner, repo, pull_number, "get_files", page),
                             )
                         except Exception as exc:
-                            raise RuntimeError(f"MCP get_files call failed: {exc}") from exc
-                        page_files = self._parse_files_result(result)
+                            failure = RuntimeError(f"MCP get_files tool failure: {self._exception_detail(exc)}")
+                            break
+                        if self._result_error(result):
+                            failure = RuntimeError("MCP get_files tool failure: pull_request_read returned a tool error.")
+                            break
+                        try:
+                            page_files = self._parse_files_result(result)
+                        except Exception as exc:
+                            failure = RuntimeError(f"MCP get_files parse failure: {self._exception_detail(exc)}")
+                            break
                         files.extend(page_files)
                         if len(page_files) < self.FILES_PAGE_SIZE:
                             break
                         page += 1
 
-                    print("[MCP] Changed files returned:")
-                    print(len(files))
-                    if files and all(item["patch"].strip() for item in files):
-                        print("[MCP] GitHub changed-file READ completed")
-                        return files
+                    if failure is None:
+                        print("[MCP] Changed files returned:")
+                        print(len(files))
+                        if files and all(item["patch"].strip() for item in files):
+                            normalized = files
+                        else:
+                            print("[MCP] get_files did not provide usable patch content")
+                            print("[MCP] Falling back to MCP method:")
+                            print("get_diff")
+                            try:
+                                diff_result = await session.call_tool(
+                                    "pull_request_read",
+                                    self._read_arguments(owner, repo, pull_number, "get_diff"),
+                                )
+                            except Exception as exc:
+                                failure = RuntimeError(f"MCP get_diff tool failure: {self._exception_detail(exc)}")
+                            else:
+                                self._log_diff_result_shape(diff_result)
+                                if self._result_error(diff_result):
+                                    failure = RuntimeError("MCP get_diff tool failure: pull_request_read returned a tool error.")
+                                else:
+                                    try:
+                                        print("[MCP] Extracting unified diff text")
+                                        diff_text, source = self._extract_diff_text(diff_result)
+                                        print("[MCP] Unified diff text source:")
+                                        print(source)
+                                        print("[MCP] Unified diff starts with diff header:")
+                                        print("true" if diff_text.lstrip().startswith("diff --git ") else "false")
+                                    except Exception as exc:
+                                        failure = RuntimeError(f"MCP get_diff parse failure: {self._exception_detail(exc)}")
+                                    else:
+                                        print("[MCP] Unified PR diff received")
+                                        try:
+                                            print("[MCP] Normalizing unified diff into per-file patches")
+                                            normalized = self._normalize_diff_files(diff_text, files)
+                                            if not normalized or not any(item["patch"].strip() for item in normalized):
+                                                raise RuntimeError("Normalization produced no usable file patches.")
+                                        except Exception as exc:
+                                            stage = "MCP diff normalization"
+                                            print(f"[MCP] {stage} failed")
+                                            print(f"[MCP] Exception type: {type(exc).__name__}")
+                                            print(f"[MCP] Exception message: {exc}")
+                                            failure = RuntimeError(
+                                                f"MCP diff normalization failure: {self._exception_detail(exc)}"
+                                            )
 
-                    print("[MCP] get_files did not provide usable patch content")
-                    print("[MCP] Falling back to MCP method:")
-                    print("get_diff")
-                    try:
-                        diff_result = await session.call_tool(
-                            "pull_request_read",
-                            self._read_arguments(owner, repo, pull_number, "get_diff"),
-                        )
-                    except Exception as exc:
-                        raise RuntimeError(f"MCP get_diff call failed: {exc}") from exc
-                    diff_files = self._parse_diff_result(diff_result)
-                    print("[MCP] Unified PR diff received")
-                    by_filename = {item["filename"]: item["patch"] for item in diff_files}
-                    if files:
-                        for item in files:
-                            if not item["patch"]:
-                                item["patch"] = by_filename.get(item["filename"], "")
-                        normalized = files
-                    else:
-                        normalized = diff_files
-                    if not any(item["patch"].strip() for item in normalized):
-                        raise RuntimeError("MCP returned no usable changed-file patches.")
-                    print("[MCP] Diff normalized into:")
-                    print(len(normalized))
-                    print("[MCP] GitHub changed-file READ completed")
-                    return normalized
-        except RuntimeError:
-            raise
+                    if failure is None and normalized is not None:
+                        if not files or not all(item["patch"].strip() for item in files):
+                            print("[MCP] Diff normalized into:")
+                            print(f"{len(normalized)} changed files")
+                        print("[MCP] GitHub changed-file READ completed")
         except Exception as exc:
-            raise RuntimeError(f"MCP connection failed while reading Pull Request files: {exc}") from exc
+            if failure is not None:
+                failure = RuntimeError(f"{failure}; MCP session shutdown also failed: {self._exception_detail(exc)}")
+            else:
+                failure = RuntimeError(f"MCP connection failure while reading Pull Request files: {self._exception_detail(exc)}")
+
+        if failure is not None:
+            raise failure
+        if normalized is None:
+            raise RuntimeError("MCP read completed without returning changed-file data.")
+        return normalized
 
     @staticmethod
     def _write_arguments(method: str, owner: str, repo: str, pull_number: int) -> dict[str, Any]:
