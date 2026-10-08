@@ -558,7 +558,11 @@ class GitHubMCPProvider:
                     if failure is None:
                         print("[MCP] Changed files returned:")
                         print(len(files))
-                        if files and all(item["patch"].strip() for item in files):
+                        if not files:
+                            print("[MCP] No effective Pull Request changes detected")
+                            print("[MCP] get_diff skipped")
+                            normalized = []
+                        elif all(item["patch"].strip() for item in files):
                             normalized = files
                         else:
                             print("[MCP] get_files did not provide usable patch content")
@@ -603,10 +607,14 @@ class GitHubMCPProvider:
                                             )
 
                     if failure is None and normalized is not None:
-                        if not files or not all(item["patch"].strip() for item in files):
+                        if not normalized:
+                            print("[MCP] GitHub changed-file READ completed")
+                        elif not files or not all(item["patch"].strip() for item in files):
                             print("[MCP] Diff normalized into:")
                             print(f"{len(normalized)} changed files")
-                        print("[MCP] GitHub changed-file READ completed")
+                            print("[MCP] GitHub changed-file READ completed")
+                        else:
+                            print("[MCP] GitHub changed-file READ completed")
         except Exception as exc:
             if failure is not None:
                 failure = RuntimeError(f"{failure}; MCP session shutdown also failed: {self._exception_detail(exc)}")

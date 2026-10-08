@@ -81,6 +81,18 @@ def build_metadata_only_advisory(files: list[dict]) -> str:
     )
 
 
+def build_no_change_advisory() -> str:
+    return (
+        "# AI Code Review\n\n"
+        "## No reviewable code changes detected\n\n"
+        "The current Pull Request revision contains no effective code changes to analyze.\n\n"
+        "The previously introduced change may have been fixed or reverted, leaving no current diff requiring AI "
+        "analysis.\n\n"
+        "No AI model call was required for this revision.\n\n"
+        "Human approval remains required."
+    )
+
+
 def main() -> None:
     token = os.getenv("GITHUB_TOKEN")
     if not token:
@@ -113,6 +125,24 @@ def main() -> None:
     print(len(filtered["files_reviewed"]))
     print("[DIFF] Bounded diff generated")
     print("[DIFF] Added-line mapping generated")
+
+    if not files_payload:
+        print("[AI] Generative Engine call skipped")
+        print("[REVIEW] Preparing no-change advisory")
+        asyncio.run(
+            github_provider.post_review(
+                owner=repo_owner,
+                repo=repo_name,
+                pull_number=pr_context["pr_number"],
+                review_payload={
+                    "body": build_no_change_advisory(),
+                    "commit_id": pr_context["head_sha"],
+                    "comments": [],
+                },
+            ),
+        )
+        print("AI PR REVIEW POSTED SUCCESSFULLY")
+        return
 
     if not filtered["files_reviewed"] or not filtered["diff_text"].strip():
         metadata_only_files = [

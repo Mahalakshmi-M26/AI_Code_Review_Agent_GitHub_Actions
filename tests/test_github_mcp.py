@@ -332,6 +332,20 @@ def test_get_files_without_patches_falls_back_to_mcp_get_diff(monkeypatch):
     assert files == [{"filename": "src/app.py", "patch": "@@ -1 +1,2 @@\n old\n+new"}]
 
 
+def test_empty_get_files_is_success_and_skips_get_diff(monkeypatch, capsys):
+    calls = []
+    install_fake_mcp(monkeypatch, [files_result([])], calls)
+
+    files = asyncio.run(GitHubMCPProvider(token="abc123").get_pull_request_files("octo", "demo", 42))
+
+    assert files == []
+    assert [call[1]["method"] for call in calls] == ["get_files"]
+    output = capsys.readouterr().out
+    assert "[MCP] Changed files returned:\n0" in output
+    assert "[MCP] No effective Pull Request changes detected" in output
+    assert "[MCP] get_diff skipped" in output
+
+
 def test_get_diff_splits_modified_new_renamed_and_deleted_files(monkeypatch):
     calls = []
     full_diff = (
@@ -527,7 +541,7 @@ def test_get_diff_filename_mismatch_fails_instead_of_reviewing_incomplete_data(m
 
 def test_get_diff_empty_or_missing_text_fails_as_parse_error(monkeypatch):
     calls = []
-    install_fake_mcp(monkeypatch, [files_result([]), CallToolResult(content=[])], calls)
+    install_fake_mcp(monkeypatch, [files_result([{"filename": "src/app.py"}]), CallToolResult(content=[])], calls)
 
     with pytest.raises(RuntimeError, match="MCP get_diff parse failure.*no structured content or text content"):
         asyncio.run(GitHubMCPProvider(token="abc123").get_pull_request_files("octo", "demo", 42))
@@ -535,7 +549,7 @@ def test_get_diff_empty_or_missing_text_fails_as_parse_error(monkeypatch):
 
 def test_get_diff_tool_error_is_distinguished_from_parse_failure(monkeypatch):
     calls = []
-    install_fake_mcp(monkeypatch, [files_result([]), CallToolResult(content=[], is_error=True)], calls)
+    install_fake_mcp(monkeypatch, [files_result([{"filename": "src/app.py"}]), CallToolResult(content=[], is_error=True)], calls)
 
     with pytest.raises(RuntimeError, match="MCP get_diff tool failure"):
         asyncio.run(GitHubMCPProvider(token="abc123").get_pull_request_files("octo", "demo", 42))
@@ -543,7 +557,7 @@ def test_get_diff_tool_error_is_distinguished_from_parse_failure(monkeypatch):
 
 def test_diff_normalization_failure_logs_type_and_message_before_context_exit(monkeypatch, capsys):
     calls = []
-    install_fake_mcp(monkeypatch, [files_result([]), text_result("not a diff")], calls)
+    install_fake_mcp(monkeypatch, [files_result([{"filename": "src/app.py"}]), text_result("not a diff")], calls)
 
     with pytest.raises(RuntimeError, match="MCP diff normalization failure") as error:
         asyncio.run(GitHubMCPProvider(token="abc123").get_pull_request_files("octo", "demo", 42))
