@@ -508,6 +508,38 @@ def test_diff_normalization_failure_logs_type_and_message_before_context_exit(mo
     assert "unhandled errors in a TaskGroup" not in str(error.value)
 
 
+def test_diff_structure_diagnostics_log_headers_and_matches_without_hunk_body(capsys):
+    diff_text = (
+        "diff --git a/src/A.java b/src/A.java\n"
+        "index abc..def 100644\n"
+        "--- a/src/A.java\n"
+        "+++ b/src/A.java\n"
+        "@@ -1 +1,2 @@\n"
+        " public context must not print\n"
+        "+secret_added_source must not print\n"
+        "-secret_removed_source must not print\n"
+    )
+    metadata = [{"filename": "src/A.java", "status": "modified"}]
+
+    GitHubMCPProvider._log_diff_normalization_diagnostics(diff_text, metadata)
+
+    output = capsys.readouterr().out
+    assert "[MCP-DIFF-DIAG] diff --git a/src/A.java b/src/A.java" in output
+    assert "[MCP-DIFF-DIAG] index abc..def 100644" in output
+    assert "[MCP-DIFF-DIAG] --- a/src/A.java" in output
+    assert "[MCP-DIFF-DIAG] +++ b/src/A.java" in output
+    assert "[MCP-DIFF-DIAG] Metadata status:\n[MCP-DIFF-DIAG] modified" in output
+    assert "[MCP-DIFF-DIAG] Parsed old path:\n[MCP-DIFF-DIAG] a/src/A.java" in output
+    assert "[MCP-DIFF-DIAG] Parsed new path:\n[MCP-DIFF-DIAG] b/src/A.java" in output
+    assert "[MCP-DIFF-DIAG] Candidate filename:\n[MCP-DIFF-DIAG] src/A.java" in output
+    assert "[MCP-DIFF-DIAG] Hunk header found:\n[MCP-DIFF-DIAG] true" in output
+    assert "[MCP-DIFF-DIAG] Metadata file count:\n[MCP-DIFF-DIAG] 1" in output
+    assert "[MCP-DIFF-DIAG] Parsed diff section count:\n[MCP-DIFF-DIAG] 1" in output
+    assert "[MCP-DIFF-DIAG] Usable patch count:\n[MCP-DIFF-DIAG] 1" in output
+    assert "[MCP-DIFF-DIAG] Match:\n[MCP-DIFF-DIAG] true" in output
+    assert "must not print" not in output
+
+
 def test_mcp_tool_error_fails_without_rest_fallback(monkeypatch):
     calls = []
     error_result = CallToolResult(content=[], is_error=True)

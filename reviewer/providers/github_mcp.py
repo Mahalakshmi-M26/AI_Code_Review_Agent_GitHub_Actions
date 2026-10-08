@@ -256,6 +256,125 @@ class GitHubMCPProvider:
         return files
 
     @classmethod
+    def _log_diff_normalization_diagnostics(
+        cls,
+        diff_text: str,
+        metadata: list[dict[str, Any]],
+    ) -> None:
+        allowed_headers = (
+            "diff --git ",
+            "index ",
+            "--- ",
+            "+++ ",
+            "new file mode ",
+            "deleted file mode ",
+            "similarity index ",
+            "rename from ",
+            "rename to ",
+            "old mode ",
+            "new mode ",
+        )
+        print("[MCP-DIFF-DIAG] Unified diff structural headers:")
+        blocks = re.split(r"(?m)(?=^diff --git )", diff_text)
+        for block in blocks:
+            for line in block.lstrip("\r\n").splitlines():
+                if line.startswith("@@ "):
+                    break
+                if line.startswith(allowed_headers):
+                    print(f"[MCP-DIFF-DIAG] {line}")
+
+        print("[MCP-DIFF-DIAG] Metadata files:")
+        for item in metadata:
+            print("[MCP-DIFF-DIAG] Metadata file:")
+            print(f"[MCP-DIFF-DIAG] {item.get('filename', '')}")
+            print("[MCP-DIFF-DIAG] Metadata status:")
+            print(f"[MCP-DIFF-DIAG] {item.get('status', '<not provided>')}")
+
+        sections: list[dict[str, Any]] = []
+        for block in blocks:
+            block = block.lstrip("\r\n")
+            if not block.startswith("diff --git "):
+                continue
+            header = block.splitlines()[0]
+            old_path = None
+            new_path = None
+            for line in block.splitlines():
+                if line.startswith("@@ "):
+                    break
+                if line.startswith("--- "):
+                    old_path = line[4:]
+                elif line.startswith("+++ "):
+                    new_path = line[4:]
+            candidate = cls._diff_filename(block)
+            has_hunk = re.search(r"(?m)^@@ ", block) is not None
+            sections.append({
+                "header": header,
+                "old_path": old_path or "<not present>",
+                "new_path": new_path or "<not present>",
+                "candidate": candidate or "<unparsed>",
+                "has_hunk": has_hunk,
+                "patch_usable": has_hunk and bool(candidate),
+            })
+
+        print("[MCP-DIFF-DIAG] Metadata file count:")
+        print(f"[MCP-DIFF-DIAG] {len(metadata)}")
+        print("[MCP-DIFF-DIAG] Parsed diff section count:")
+        print(f"[MCP-DIFF-DIAG] {len(sections)}")
+        metadata_paths = {
+            cls._normalize_diff_path(str(item.get("filename") or ""))
+            for item in metadata
+        }
+        usable_count = sum(
+            section["patch_usable"]
+            and (
+                not metadata_paths
+                or cls._normalize_diff_path(str(section["candidate"])) in metadata_paths
+            )
+            for section in sections
+        )
+        print("[MCP-DIFF-DIAG] Usable patch count:")
+        print(f"[MCP-DIFF-DIAG] {usable_count}")
+
+        for index, section in enumerate(sections, start=1):
+            print("[MCP-DIFF-DIAG] Section number:")
+            print(f"[MCP-DIFF-DIAG] {index}")
+            print("[MCP-DIFF-DIAG] Raw diff header:")
+            print(f"[MCP-DIFF-DIAG] {section['header']}")
+            print("[MCP-DIFF-DIAG] Parsed old path:")
+            print(f"[MCP-DIFF-DIAG] {section['old_path']}")
+            print("[MCP-DIFF-DIAG] Parsed new path:")
+            print(f"[MCP-DIFF-DIAG] {section['new_path']}")
+            print("[MCP-DIFF-DIAG] Candidate filename:")
+            print(f"[MCP-DIFF-DIAG] {section['candidate']}")
+            print("[MCP-DIFF-DIAG] Hunk header found:")
+            print(f"[MCP-DIFF-DIAG] {'true' if section['has_hunk'] else 'false'}")
+
+        for item in metadata:
+            metadata_filename = str(item.get("filename") or "")
+            normalized_metadata = cls._normalize_diff_path(metadata_filename)
+            for section in sections:
+                candidate = str(section["candidate"])
+                matched = (
+                    candidate != "<unparsed>"
+                    and normalized_metadata == cls._normalize_diff_path(candidate)
+                )
+                print("[MCP-DIFF-DIAG] Metadata filename:")
+                print(f"[MCP-DIFF-DIAG] {metadata_filename}")
+                print("[MCP-DIFF-DIAG] Candidate section filename:")
+                print(f"[MCP-DIFF-DIAG] {candidate}")
+                print("[MCP-DIFF-DIAG] Match:")
+                print(f"[MCP-DIFF-DIAG] {'true' if matched else 'false'}")
+
+        for section in sections:
+            if section["candidate"] != "<unparsed>":
+                candidate_path = cls._normalize_diff_path(str(section["candidate"]))
+                if candidate_path not in metadata_paths:
+                    print("[MCP-DIFF-DIAG] Candidate section filename:")
+                    print(f"[MCP-DIFF-DIAG] {section['candidate']}")
+                    print("[MCP-DIFF-DIAG] Match:")
+                    print("[MCP-DIFF-DIAG] false")
+
+    @classmethod
     def _extract_diff_text(cls, result: Any) -> tuple[str, str]:
         if isinstance(result, dict):
             structured = result.get("structured_content", result.get("structuredContent"))
@@ -457,6 +576,7 @@ class GitHubMCPProvider:
                                         print("[MCP] Unified PR diff received")
                                         try:
                                             print("[MCP] Normalizing unified diff into per-file patches")
+                                            self._log_diff_normalization_diagnostics(diff_text, files)
                                             normalized = self._normalize_diff_files(diff_text, files)
                                             if not normalized or not any(item["patch"].strip() for item in normalized):
                                                 raise RuntimeError("Normalization produced no usable file patches.")
