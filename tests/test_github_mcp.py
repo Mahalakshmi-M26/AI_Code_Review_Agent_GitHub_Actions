@@ -5,7 +5,12 @@ import pytest
 from mcp.types import CallToolResult, TextContent
 
 from reviewer.providers.github_mcp import GitHubMCPProvider
-from reviewer.review import filter_changed_files
+from reviewer.models import ReviewResult
+from reviewer.review import (
+    build_github_review_payload,
+    filter_changed_files,
+    validate_finding_lines,
+)
 
 
 def install_fake_mcp(monkeypatch, results, calls):
@@ -48,6 +53,37 @@ def files_result(files):
 
 def text_result(text):
     return CallToolResult(content=[TextContent(type="text", text=text)])
+
+
+def make_review_result(findings=None):
+    return ReviewResult.model_validate(
+        {
+            "decision": "ADVISORY",
+            "risk_level": "MEDIUM",
+            "findings": findings or [],
+            "summary": "Review summary",
+            "files_reviewed": ["src/app.py"],
+            "files_skipped": [],
+            "categories_reviewed": ["Security"],
+        }
+    )
+
+
+def make_finding(line):
+    return {
+        "severity": "HIGH",
+        "category": "Security",
+        "file": "src/app.py",
+        "line": line,
+        "title": "Validate input",
+        "issue": "Input is not validated.",
+        "recommendation": "Validate before use.",
+        "suggested_fix": "value = validate(value)",
+    }
+
+
+def successful_write_results(count):
+    return [CallToolResult(content=[], is_error=False) for _ in range(count)]
 
 
 def test_server_parameters_use_official_image_and_toolsets():
@@ -365,6 +401,142 @@ def test_mcp_normalized_patch_feeds_filter_and_deterministic_line_map(monkeypatc
 
 def test_provider_read_has_no_rest_endpoint_fallback():
     source = GitHubMCPProvider.get_pull_request_files.__code__.co_names
+
+    assert "github_request" not in source
+    assert "api.github.com" not in source
+
+
+def test_post_review_creates_adds_multiple_comments_and_submits(monkeypatch):
+    calls = []
+    install_fake_mcp(monkeypatch, successful_write_results(4), calls)
+    line_map = {"src/app.py": [{"line": 8, "content": "value = request.data"}, {"line": 9, "content": "save(value)"}]}
+    result = make_review_result([make_finding(8), {**make_finding(9), "title": "Validate before saving"}])
+    validated = validate_finding_lines(result, line_map)
+    payload = build_github_review_payload(validated, line_map, "head-sha-123")
+
+    asyncio.run(GitHubMCPProvider(token="abc123").post_review("octo", "demo", 42, payload))
+
+    assert calls[0] == (
+        "pull_request_review_write",
+        {"method": "create", "owner": "octo", "repo": "demo", "pullNumber": 42, "commitID": "head-sha-123"},
+    )
+    assert "event" not in calls[0][1]
+    assert calls[1][0] == "add_comment_to_pending_review"
+    assert calls[1][1] == {
+        "owner": "octo",
+        "repo": "demo",
+        "pullNumber": 42,
+        "path": "src/app.py",
+        "body": payload["comments"][0]["body"],
+        "line": 8,
+        "side": "RIGHT",
+        "subjectType": "LINE",
+    }
+    assert calls[2][0] == "add_comment_to_pending_review"
+    assert calls[2][1]["line"] == 9
+    assert calls[2][1]["body"] == payload["comments"][1]["body"]
+    assert calls[3] == (
+        "pull_request_review_write",
+        {
+            "method": "submit_pending",
+            "owner": "octo",
+            "repo": "demo",
+            "pullNumber": 42,
+            "body": payload["body"],
+            "event": "COMMENT",
+        },
+    )
+
+
+def test_post_review_with_no_findings_submits_summary_without_inline_calls(monkeypatch):
+    calls = []
+    install_fake_mcp(monkeypatch, successful_write_results(2), calls)
+    payload = build_github_review_payload(make_review_result(), {}, None)
+
+    asyncio.run(GitHubMCPProvider(token="abc123").post_review("octo", "demo", 42, payload))
+
+    assert len(calls) == 2
+    assert calls[0][1] == {"method": "create", "owner": "octo", "repo": "demo", "pullNumber": 42}
+    assert calls[1][1]["method"] == "submit_pending"
+    assert calls[1][1]["body"] == payload["body"]
+    assert calls[1][1]["event"] == "COMMENT"
+
+
+def test_invalid_line_remains_summary_only_and_is_not_sent_as_inline(monkeypatch):
+    calls = []
+    install_fake_mcp(monkeypatch, successful_write_results(2), calls)
+    line_map = {"src/app.py": [{"line": 8, "content": "value = request.data"}]}
+    result = validate_finding_lines(make_review_result([make_finding(999)]), line_map)
+    payload = build_github_review_payload(result, line_map, "head-sha")
+
+    asyncio.run(GitHubMCPProvider(token="abc123").post_review("octo", "demo", 42, payload))
+
+    assert result.findings[0].line is None
+    assert "comments" not in payload
+    assert [call[1]["method"] for call in calls] == ["create", "submit_pending"]
+
+
+def test_inline_comment_failure_cleans_up_pending_review(monkeypatch):
+    calls = []
+    install_fake_mcp(
+        monkeypatch,
+        [successful_write_results(1)[0], RuntimeError("inline broke"), successful_write_results(1)[0]],
+        calls,
+    )
+    payload = {"body": "summary", "commit_id": "head", "comments": [{"path": "src/app.py", "line": 8, "side": "RIGHT", "body": "finding"}]}
+
+    with pytest.raises(RuntimeError, match="inline broke"):
+        asyncio.run(GitHubMCPProvider(token="abc123").post_review("octo", "demo", 42, payload))
+
+    assert calls[0][1]["method"] == "create"
+    assert calls[1][0] == "add_comment_to_pending_review"
+    assert calls[2][1]["method"] == "delete_pending"
+    assert calls[-1][0] == "pull_request_review_write"
+
+
+def test_submit_failure_cleans_up_pending_review(monkeypatch):
+    calls = []
+    install_fake_mcp(
+        monkeypatch,
+        [successful_write_results(1)[0], RuntimeError("submit broke"), successful_write_results(1)[0]],
+        calls,
+    )
+    payload = {"body": "summary", "comments": []}
+
+    with pytest.raises(RuntimeError, match="submit broke"):
+        asyncio.run(GitHubMCPProvider(token="abc123").post_review("octo", "demo", 42, payload))
+
+    assert [call[1]["method"] for call in calls] == ["create", "submit_pending", "delete_pending"]
+
+
+def test_cleanup_failure_does_not_hide_original_publication_failure(monkeypatch):
+    calls = []
+    install_fake_mcp(
+        monkeypatch,
+        [successful_write_results(1)[0], RuntimeError("original inline failure"), RuntimeError("cleanup failure")],
+        calls,
+    )
+    payload = {"body": "summary", "comments": [{"path": "src/app.py", "line": 8, "body": "finding"}]}
+
+    with pytest.raises(RuntimeError, match="original inline failure.*cleanup also failed:.*cleanup failure"):
+        asyncio.run(GitHubMCPProvider(token="abc123").post_review("octo", "demo", 42, payload))
+
+    assert calls[-1][1]["method"] == "delete_pending"
+
+
+def test_create_mcp_tool_error_fails_clearly_without_rest_fallback(monkeypatch):
+    calls = []
+    install_fake_mcp(monkeypatch, [CallToolResult(content=[], is_error=True)], calls)
+
+    with pytest.raises(RuntimeError, match="pull_request_review_write.*create.*tool error"):
+        asyncio.run(GitHubMCPProvider(token="abc123").post_review("octo", "demo", 42, {"body": "summary"}))
+
+    assert len(calls) == 1
+    assert calls[0][1]["method"] == "create"
+
+
+def test_provider_review_write_has_no_rest_fallback():
+    source = GitHubMCPProvider.post_review.__code__.co_names
 
     assert "github_request" not in source
     assert "api.github.com" not in source

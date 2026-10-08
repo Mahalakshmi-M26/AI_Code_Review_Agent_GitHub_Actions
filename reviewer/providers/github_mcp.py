@@ -333,6 +333,124 @@ class GitHubMCPProvider:
         except Exception as exc:
             raise RuntimeError(f"MCP connection failed while reading Pull Request files: {exc}") from exc
 
+    @staticmethod
+    def _write_arguments(method: str, owner: str, repo: str, pull_number: int) -> dict[str, Any]:
+        return {
+            "method": method,
+            "owner": owner,
+            "repo": repo,
+            "pullNumber": pull_number,
+        }
+
+    @staticmethod
+    async def _call_write_tool(session: ClientSession, tool_name: str, arguments: dict[str, Any]) -> Any:
+        try:
+            result = await session.call_tool(tool_name, arguments)
+        except Exception as exc:
+            method = arguments.get("method", tool_name)
+            raise RuntimeError(f"MCP {tool_name} ({method}) call failed: {exc}") from exc
+        if GitHubMCPProvider._result_error(result):
+            method = arguments.get("method", tool_name)
+            raise RuntimeError(f"MCP {tool_name} ({method}) returned a tool error.")
+        return result
+
+    async def post_review(
+        self,
+        owner: str,
+        repo: str,
+        pull_number: int,
+        review_payload: dict[str, Any],
+    ) -> None:
+        """Publish an existing review payload as one MCP pending Pull Request review."""
+        if not self.token:
+            raise RuntimeError("Missing GITHUB_TOKEN for GitHub MCP review publishing.")
+
+        comments = review_payload.get("comments") or []
+        if not isinstance(comments, list):
+            raise RuntimeError("Review payload comments must be a list.")
+
+        print("[MCP-WRITE] Publishing Pull Request review")
+        print("[MCP-WRITE] Tool:")
+        print("pull_request_review_write")
+        params = self.build_server_parameters()
+        try:
+            transport = stdio_client(params)
+            async with transport as (read, write):
+                async with ClientSession(read, write) as session:
+                    self.session = session
+                    try:
+                        await session.initialize()
+                    except Exception as exc:
+                        raise RuntimeError(f"MCP initialization failed before review publishing: {exc}") from exc
+
+                    create_arguments = self._write_arguments("create", owner, repo, pull_number)
+                    commit_id = review_payload.get("commit_id")
+                    if commit_id:
+                        create_arguments["commitID"] = commit_id
+                    print("[MCP-WRITE] Creating pending review")
+                    print("[MCP-WRITE] Commit:")
+                    print("PR head SHA supplied" if commit_id else "PR head SHA not supplied")
+                    await self._call_write_tool(session, "pull_request_review_write", create_arguments)
+                    print("[MCP-WRITE] Pending review created")
+                    print(f"[MCP-WRITE] Adding {len(comments)} validated inline comments")
+
+                    try:
+                        for comment in comments:
+                            if not isinstance(comment, dict):
+                                raise RuntimeError("Review payload contained a malformed inline comment.")
+                            path = comment.get("path")
+                            line = comment.get("line")
+                            body = comment.get("body")
+                            if not isinstance(path, str) or not path or not isinstance(line, int) or not isinstance(body, str):
+                                raise RuntimeError("Review payload contained an incomplete inline comment.")
+                            print("[MCP-WRITE] Adding inline comment:")
+                            print(path)
+                            print(f"RIGHT line {line}")
+                            await self._call_write_tool(
+                                session,
+                                "add_comment_to_pending_review",
+                                {
+                                    "owner": owner,
+                                    "repo": repo,
+                                    "pullNumber": pull_number,
+                                    "path": path,
+                                    "body": body,
+                                    "line": line,
+                                    "side": "RIGHT",
+                                    "subjectType": "LINE",
+                                },
+                            )
+
+                        submit_arguments = self._write_arguments("submit_pending", owner, repo, pull_number)
+                        submit_arguments.update({
+                            "body": review_payload.get("body", ""),
+                            "event": "COMMENT",
+                        })
+                        print("[MCP-WRITE] Submitting pending review")
+                        print("[MCP-WRITE] Event:")
+                        print("COMMENT")
+                        print("[MCP-WRITE] Enterprise summary included")
+                        await self._call_write_tool(session, "pull_request_review_write", submit_arguments)
+                    except Exception as exc:
+                        print("[MCP] Review publishing failed")
+                        print("[MCP] Attempting pending review cleanup")
+                        cleanup_arguments = self._write_arguments("delete_pending", owner, repo, pull_number)
+                        try:
+                            await self._call_write_tool(session, "pull_request_review_write", cleanup_arguments)
+                        except Exception as cleanup_exc:
+                            print("[MCP] Pending review cleanup also failed")
+                            raise RuntimeError(
+                                f"MCP review publishing failed: {exc}; pending review cleanup also failed: {cleanup_exc}"
+                            ) from exc
+                        print("[MCP] Pending review cleanup succeeded")
+                        raise RuntimeError(f"MCP review publishing failed: {exc}") from exc
+
+                    print("[MCP-WRITE] Review submitted successfully")
+        except RuntimeError:
+            raise
+        except Exception as exc:
+            raise RuntimeError(f"MCP connection failed while publishing Pull Request review: {exc}") from exc
+
     async def _run_session(self) -> tuple[Any, list[dict[str, Any]], dict[str, Any]]:
         params = self.build_server_parameters()
         try:

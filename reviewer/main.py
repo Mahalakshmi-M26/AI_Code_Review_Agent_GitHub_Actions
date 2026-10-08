@@ -6,8 +6,6 @@ import os
 import sys
 from pathlib import Path
 
-import httpx
-
 from reviewer.review import (
     MAX_FILE_DIFF_CHARS,
     MAX_FILES,
@@ -47,29 +45,6 @@ def load_event() -> dict:
     return data
 
 
-def github_request(path: str, token: str, method: str = "GET", body: dict | None = None) -> dict | list:
-    url = f"https://api.github.com{path}"
-    headers = {
-        "Authorization": f"Bearer {token}",
-        "Accept": "application/vnd.github+json",
-        "X-GitHub-Api-Version": "2022-11-28",
-    }
-
-    try:
-        response = httpx.request(method, url, headers=headers, json=body, timeout=60)
-    except httpx.HTTPError as exc:
-        raise RuntimeError(f"GitHub API request failed for {path}: {exc}") from exc
-
-    if response.status_code >= 400:
-        message = response.text[:300].strip()
-        raise RuntimeError(f"GitHub API error {response.status_code} for {path}: {message}")
-
-    try:
-        return response.json()
-    except ValueError as exc:
-        raise RuntimeError(f"GitHub API returned no JSON for {path}.") from exc
-
-
 def ensure_pr_context(event: dict) -> dict:
     pr = event.get("pull_request") or {}
     if not pr:
@@ -107,8 +82,9 @@ def main() -> None:
     print(pr_context["repo_slug"])
     print("[CONTEXT] Pull Request:")
     print(f"#{pr_context['pr_number']}")
+    github_provider = GitHubMCPProvider(token=token)
     files_payload = asyncio.run(
-        GitHubMCPProvider(token=token).get_pull_request_files(
+        github_provider.get_pull_request_files(
             owner=repo_owner,
             repo=repo_name,
             pull_number=pr_context["pr_number"],
@@ -151,24 +127,28 @@ def main() -> None:
         base_url=base_url,
         timeout_seconds=timeout_seconds,
     )
+    print("[AI] Structured response received")
 
-    review_result = validate_finding_lines(
-        validate_result(raw_response),
+    validated_result = validate_result(raw_response)
+    print("[PYDANTIC] Response validated")
+    review_result = validate_finding_lines(validated_result, filtered["changed_line_map"])
+    print("[LOCATION] Finding locations validated")
+    review_payload = build_github_review_payload(
+        review_result,
         filtered["changed_line_map"],
+        pr_context["head_sha"],
     )
-    print("[REST-WRITE] Publishing review using existing temporary REST path")
-    github_request(
-        f"/repos/{repo_owner}/{repo_name}/pulls/{pr_context['pr_number']}/reviews",
-        token=token,
-        method="POST",
-        body=build_github_review_payload(
-            review_result,
-            filtered["changed_line_map"],
-            pr_context["head_sha"],
+    print("[FORMAT] Enterprise summary generated")
+    asyncio.run(
+        github_provider.post_review(
+            owner=repo_owner,
+            repo=repo_name,
+            pull_number=pr_context["pr_number"],
+            review_payload=review_payload,
         ),
     )
 
-    print("AI PR review posted successfully.")
+    print("AI PR REVIEW POSTED SUCCESSFULLY")
 
 
 if __name__ == "__main__":
