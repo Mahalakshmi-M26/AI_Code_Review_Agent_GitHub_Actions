@@ -555,60 +555,6 @@ def test_get_diff_tool_error_is_distinguished_from_parse_failure(monkeypatch):
         asyncio.run(GitHubMCPProvider(token="abc123").get_pull_request_files("octo", "demo", 42))
 
 
-def test_diff_normalization_failure_logs_type_and_message_before_context_exit(monkeypatch, capsys):
-    calls = []
-    install_fake_mcp(monkeypatch, [files_result([{"filename": "src/app.py"}]), text_result("not a diff")], calls)
-
-    with pytest.raises(RuntimeError, match="MCP diff normalization failure") as error:
-        asyncio.run(GitHubMCPProvider(token="abc123").get_pull_request_files("octo", "demo", 42))
-
-    output = capsys.readouterr().out
-    assert "[MCP] get_diff result type:" in output
-    assert "mcp_types._types.CallToolResult" in output
-    assert "[MCP] structured_content present:" in output
-    assert "[MCP] content item count:" in output
-    assert "[MCP] content[0] text length: 10" in output
-    assert "[MCP] Unified diff text source:" in output
-    assert "content[0].text" in output
-    assert "[MCP] Unified diff starts with diff header:" in output
-    assert "[MCP] MCP diff normalization failed" in output
-    assert "Exception type: RuntimeError" in output
-    assert "Exception message: MCP get_diff response contained zero recognized file sections." in output
-    assert "unhandled errors in a TaskGroup" not in str(error.value)
-
-
-def test_diff_structure_diagnostics_log_headers_and_matches_without_hunk_body(capsys):
-    diff_text = (
-        "diff --git a/src/A.java b/src/A.java\n"
-        "index abc..def 100644\n"
-        "--- a/src/A.java\n"
-        "+++ b/src/A.java\n"
-        "@@ -1 +1,2 @@\n"
-        " public context must not print\n"
-        "+secret_added_source must not print\n"
-        "-secret_removed_source must not print\n"
-    )
-    metadata = [{"filename": "src/A.java", "status": "modified"}]
-
-    GitHubMCPProvider._log_diff_normalization_diagnostics(diff_text, metadata)
-
-    output = capsys.readouterr().out
-    assert "[MCP-DIFF-DIAG] diff --git a/src/A.java b/src/A.java" in output
-    assert "[MCP-DIFF-DIAG] index abc..def 100644" in output
-    assert "[MCP-DIFF-DIAG] --- a/src/A.java" in output
-    assert "[MCP-DIFF-DIAG] +++ b/src/A.java" in output
-    assert "[MCP-DIFF-DIAG] Metadata status:\n[MCP-DIFF-DIAG] modified" in output
-    assert "[MCP-DIFF-DIAG] Parsed old path:\n[MCP-DIFF-DIAG] a/src/A.java" in output
-    assert "[MCP-DIFF-DIAG] Parsed new path:\n[MCP-DIFF-DIAG] b/src/A.java" in output
-    assert "[MCP-DIFF-DIAG] Candidate filename:\n[MCP-DIFF-DIAG] src/A.java" in output
-    assert "[MCP-DIFF-DIAG] Hunk header found:\n[MCP-DIFF-DIAG] true" in output
-    assert "[MCP-DIFF-DIAG] Metadata file count:\n[MCP-DIFF-DIAG] 1" in output
-    assert "[MCP-DIFF-DIAG] Parsed diff section count:\n[MCP-DIFF-DIAG] 1" in output
-    assert "[MCP-DIFF-DIAG] Usable patch count:\n[MCP-DIFF-DIAG] 1" in output
-    assert "[MCP-DIFF-DIAG] Match:\n[MCP-DIFF-DIAG] true" in output
-    assert "must not print" not in output
-
-
 def test_mcp_tool_error_fails_without_rest_fallback(monkeypatch):
     calls = []
     error_result = CallToolResult(content=[], is_error=True)

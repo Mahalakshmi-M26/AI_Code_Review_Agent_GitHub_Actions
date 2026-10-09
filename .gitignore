@@ -5,5 +5,7 @@ __pycache__/
 venv/
 *.pyc
 *.pyo
-echo "docs/" >> .gitignore
-docs/
+docs/*
+!docs/
+!docs/*.md
+!docs/ai-code-review-agent-final-demo.pptx
