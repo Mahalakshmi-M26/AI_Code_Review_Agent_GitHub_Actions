@@ -130,14 +130,38 @@ class GitHubMCPFindingLifecycle:
     def _comment_matches(cls, thread: dict[str, Any], finding: dict[str, Any]) -> bool:
         expected_body = finding.get("inline_body")
         expected_path = finding.get("file")
-        if not isinstance(expected_body, str) or not expected_body or not isinstance(expected_path, str):
-            return False
-        return any(
-            comment.get("body") == expected_body
-            and comment.get("path") == expected_path
-            and comment.get("author", cls.STATE_AUTHOR) == cls.STATE_AUTHOR
-            for comment in cls._thread_comments(thread)
+
+        print(
+            f"[P3] Looking for match: "
+            f"path={expected_path}"
         )
+
+        if not isinstance(expected_body, str) or not expected_body:
+            return False
+
+        if not isinstance(expected_path, str):
+            return False
+
+        for comment in cls._thread_comments(thread):
+            body = comment.get("body")
+            path = comment.get("path")
+            author = comment.get("author")
+
+            print(
+                f"[P3] Comment path={path} "
+                f"author={author} "
+                f"body={str(body)[:150]}"
+            )
+
+            if (
+                body == expected_body
+                and path == expected_path
+                and author == cls.STATE_AUTHOR
+            ):
+                print("[P3] MATCH FOUND")
+                return True
+
+        return False
 
     @classmethod
     def _find_matching_thread(
@@ -283,6 +307,10 @@ class GitHubMCPFindingLifecycle:
                 if not thread_id:
                     continue
                 finding["thread_id"] = thread_id
+                print(
+                    f"[P3] Thread mappedo: "
+                    f"{finding.get('finding_id')} -> {thread_id}"
+                )
                 used_thread_ids.add(thread_id)
                 if previous is None:
                     previous_by_id[str(finding["finding_id"])] = {
@@ -350,12 +378,32 @@ class GitHubMCPFindingLifecycle:
         """Associate newly published inline comments with their MCP review-thread IDs."""
         async with self._session() as session:
             threads = await self._read_threads(session, owner, repo, pull_number)
+           
+
+            print(f"[P3] Threads returned: {len(threads)}")
+
+            for thread in threads[:3]:
+                print(
+                    "[P3] Thread sample:\n"
+                    + json.dumps(thread, indent=2, default=str)
+                )
             old_ids = comparison.get("thread_ids_before") or set()
             records = [dict(record) for record in comparison.get("records", [])]
             used_ids = {str(record["thread_id"]) for record in records if record.get("thread_id")}
+            print(f"[P3] Threads returned3: {len(threads)}")
+            for thread in threads[:5]:
+                print(f"[P3] Thread3: {thread}")
             for finding in records:
                 if finding.get("thread_id") or not finding.get("inline_body"):
+                    print(f"[P3] Threads returned1: {len(threads)}")
+
+                    for thread in threads[:5]:
+                        print(f"[P3] Thread1: {thread}")
                     continue
+                print(f"[P3] Threads returned: {len(threads)}")
+
+                for thread in threads[:5]:
+                    print(f"[P3] Thread: {thread}")
                 matches = [
                     thread for thread in threads
                     if (thread_id := self._thread_id(thread))
@@ -366,6 +414,10 @@ class GitHubMCPFindingLifecycle:
                 if len(matches) == 1:
                     thread_id = self._thread_id(matches[0])
                     finding["thread_id"] = thread_id
+                    print(
+                        f"[P3] Thread mapped: "
+                        f"{finding.get('finding_id')} -> {thread_id}"
+                    )
                     print(
                         f"[P3] Thread associated "
                         f"{finding['finding_id']} -> {thread_id}"
