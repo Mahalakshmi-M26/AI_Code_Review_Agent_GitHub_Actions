@@ -283,6 +283,56 @@ def test_reconcile_resolves_only_missing_finding_thread(monkeypatch):
     assert not any(name in {"add_issue_comment", "update_issue_comment"} for name, _ in calls)
 
 
+def test_reconcile_backfills_legacy_thread_before_resolving(monkeypatch, capsys):
+    calls = []
+    finding_id = "legacy-finding"
+    thread_id = "PRRT_legacy-thread"
+    previous = [{
+        **record(finding_id, "Old finding"),
+        "thread_id": None,
+        "inline_body": "Original comment wording",
+        "status": "open",
+    }]
+    comments = [state_comment(91, previous)]
+    threads = [review_thread(
+        thread_id,
+        "Edited comment wording\n\n<!-- ai-review-finding-id:legacy-finding -->",
+    )]
+
+    def responder(name, arguments):
+        if arguments.get("method") == "get_comments":
+            return mcp_payload(comments)
+        if arguments.get("method") == "get_review_comments":
+            return mcp_payload({"review_threads": threads, "pageInfo": {"hasNextPage": False}})
+        return mcp_json_text({"message": "ok"})
+
+    install_fake_lifecycle_mcp(monkeypatch, responder, calls)
+    manager = GitHubMCPFindingLifecycle(GitHubMCPProvider(token="test-token"))
+    compared = asyncio.run(manager.reconcile(
+        "octo", "demo", 12, "new-head", [], ["src/app.py"],
+    ))
+
+    assert [item["finding_id"] for item in compared["resolved_findings"]] == [finding_id]
+    assert compared["resolved_findings"][0]["thread_id"] == thread_id
+    assert compared["records"][0]["thread_id"] == thread_id
+    assert any(
+        name == "pull_request_review_write"
+        and arguments.get("method") == "resolve_thread"
+        and arguments.get("threadId") == thread_id
+        for name, arguments in calls
+    )
+    asyncio.run(manager.finalize("octo", "demo", 12, compared))
+    assert any(
+        name == "update_issue_comment"
+        and f'"thread_id":"{thread_id}"' in arguments["body"]
+        for name, arguments in calls
+    )
+    output = capsys.readouterr().out
+    assert f"[P3] BACKFILLED THREAD finding={finding_id} thread={thread_id}" in output
+    assert f"[P3] Resolving finding {finding_id} thread={thread_id}" in output
+    assert f"[P3] MCP resolve_thread {thread_id}" in output
+
+
 def test_reconcile_reopens_returning_resolved_finding(monkeypatch):
     calls = []
     previous = [record("A", "A", status="resolved")]

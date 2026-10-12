@@ -310,6 +310,23 @@ class GitHubMCPFindingLifecycle:
                 if (thread_id := self._thread_id(thread))
             }
 
+            for record in previous_records:
+                if record.get("thread_id"):
+                    used_thread_ids.add(str(record["thread_id"]))
+                    continue
+                match = self._find_matching_thread(record, threads, used_thread_ids)
+                if match is None:
+                    continue
+                thread_id = self._thread_id(match)
+                if not thread_id:
+                    continue
+                record["thread_id"] = thread_id
+                used_thread_ids.add(thread_id)
+                print(
+                    f"[P3] BACKFILLED THREAD "
+                    f"finding={record['finding_id']} thread={record['thread_id']}"
+                )
+
             previous_by_id = {str(record["finding_id"]): record for record in previous_records}
             current = [dict(finding) for finding in current_findings]
             for finding in current:
