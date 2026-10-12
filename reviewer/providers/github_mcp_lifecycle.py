@@ -146,6 +146,7 @@ class GitHubMCPFindingLifecycle:
             body = comment.get("body")
             path = comment.get("path")
             author = comment.get("author")
+            print(f"[P3] Comment={comment}")
 
             print(
                 f"[P3] Comment path={path} "
@@ -159,8 +160,10 @@ class GitHubMCPFindingLifecycle:
                 and author == cls.STATE_AUTHOR
             ):
                 print("[P3] MATCH FOUND")
+                print(f"[P3] Comment={comment}")
                 return True
-
+            print(f"[P3] Comment={comment}")
+        print(f"[P3] Comment={comment}")
         return False
 
     @classmethod
@@ -378,7 +381,11 @@ class GitHubMCPFindingLifecycle:
         """Associate newly published inline comments with their MCP review-thread IDs."""
         async with self._session() as session:
             threads = await self._read_threads(session, owner, repo, pull_number)
-           
+            print(f"[P3] Threads returned: {len(threads)}")
+
+            for thread in threads[:3]:
+                print(thread)
+
 
             print(f"[P3] Threads returned: {len(threads)}")
 

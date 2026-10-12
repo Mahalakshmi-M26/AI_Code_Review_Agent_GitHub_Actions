@@ -43,7 +43,6 @@ def finding_fingerprint(
         normalize_file_path(str(get_value("file"))),
         normalize_text(str(get_value("category"))),
         normalize_text(str(severity)),
-        normalize_text(str(get_value("title"))),
         normalize_code_context(code_context),
     ))
     return hashlib.sha256(identity.encode("utf-8")).hexdigest()
