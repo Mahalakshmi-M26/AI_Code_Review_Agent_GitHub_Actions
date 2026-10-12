@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 from contextlib import asynccontextmanager
 from typing import Any, AsyncIterator
 
@@ -11,6 +10,7 @@ from reviewer.finding_lifecycle import (
     compare_findings,
     decode_lifecycle_state,
     encode_lifecycle_state,
+    normalize_file_path,
 )
 from reviewer.providers.github_mcp import GitHubMCPProvider
 
@@ -123,8 +123,24 @@ class GitHubMCPFindingLifecycle:
     def _thread_comments(thread: dict[str, Any]) -> list[dict[str, Any]]:
         comments = thread.get("comments", [])
         if isinstance(comments, dict):
-            comments = comments.get("nodes", [])
-        return [item for item in comments if isinstance(item, dict)] if isinstance(comments, list) else []
+            comments = comments.get("nodes", comments.get("edges", []))
+        if not isinstance(comments, list):
+            return []
+        normalized: list[dict[str, Any]] = []
+        for item in comments:
+            if not isinstance(item, dict):
+                continue
+            node = item.get("node", item)
+            if isinstance(node, dict):
+                normalized.append(node)
+        return normalized
+
+    @staticmethod
+    def _comment_author(comment: dict[str, Any]) -> str | None:
+        author = comment.get("author", comment.get("user"))
+        if isinstance(author, dict):
+            author = author.get("login")
+        return author if isinstance(author, str) else None
 
     @classmethod
     def _comment_matches(cls, thread: dict[str, Any], finding: dict[str, Any]) -> bool:
@@ -145,25 +161,15 @@ class GitHubMCPFindingLifecycle:
         for comment in cls._thread_comments(thread):
             body = comment.get("body")
             path = comment.get("path")
-            author = comment.get("author")
-            print(f"[P3] Comment={comment}")
-
-            print(
-                f"[P3] Comment path={path} "
-                f"author={author} "
-                f"body={str(body)[:150]}"
-            )
+            author = cls._comment_author(comment)
 
             if (
                 body == expected_body
-                and path == expected_path
+                and isinstance(path, str)
+                and normalize_file_path(path) == normalize_file_path(expected_path)
                 and author == cls.STATE_AUTHOR
             ):
-                print("[P3] MATCH FOUND")
-                print(f"[P3] Comment={comment}")
                 return True
-            print(f"[P3] Comment={comment}")
-        print(f"[P3] Comment={comment}")
         return False
 
     @classmethod
@@ -381,36 +387,23 @@ class GitHubMCPFindingLifecycle:
         """Associate newly published inline comments with their MCP review-thread IDs."""
         async with self._session() as session:
             threads = await self._read_threads(session, owner, repo, pull_number)
-            print(f"[P3] Threads returned: {len(threads)}")
-
-            for thread in threads[:3]:
-                print(thread)
-
-
-            print(f"[P3] Threads returned: {len(threads)}")
-
             for thread in threads[:3]:
                 print(
-                    "[P3] Thread sample:\n"
-                    + json.dumps(thread, indent=2, default=str)
+                    f"[P3] MCP thread.id={thread.get('id')!r} "
+                    f"thread.comments={thread.get('comments')!r}"
                 )
+                for comment in self._thread_comments(thread):
+                    print(
+                        f"[P3] MCP comment.body={comment.get('body')!r} "
+                        f"comment.path={comment.get('path')!r} "
+                        f"comment.author={comment.get('author', comment.get('user'))!r}"
+                    )
             old_ids = comparison.get("thread_ids_before") or set()
             records = [dict(record) for record in comparison.get("records", [])]
             used_ids = {str(record["thread_id"]) for record in records if record.get("thread_id")}
-            print(f"[P3] Threads returned3: {len(threads)}")
-            for thread in threads[:5]:
-                print(f"[P3] Thread3: {thread}")
             for finding in records:
                 if finding.get("thread_id") or not finding.get("inline_body"):
-                    print(f"[P3] Threads returned1: {len(threads)}")
-
-                    for thread in threads[:5]:
-                        print(f"[P3] Thread1: {thread}")
                     continue
-                print(f"[P3] Threads returned: {len(threads)}")
-
-                for thread in threads[:5]:
-                    print(f"[P3] Thread: {thread}")
                 matches = [
                     thread for thread in threads
                     if (thread_id := self._thread_id(thread))

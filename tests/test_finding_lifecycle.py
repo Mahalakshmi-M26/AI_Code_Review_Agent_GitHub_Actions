@@ -105,6 +105,35 @@ def test_fingerprint_is_stable_across_line_shifts_and_normalization():
     )
 
 
+def test_title_wording_changes_keep_finding_existing():
+    first_review = finding(
+        "Top-level executable code causes side effects on import",
+        8,
+        "print('initialized')",
+    )
+    second_review = finding(
+        "Module-level executable code causes side effects on import",
+        8,
+        "print('initialized')",
+    )
+    first_id = finding_fingerprint(first_review, first_review["code_context"])
+    second_id = finding_fingerprint(second_review, second_review["code_context"])
+
+    compared = compare_findings(
+        [{**record(first_id, first_review["title"]), "code_context": first_review["code_context"]}],
+        [{**record(second_id, second_review["title"]), "code_context": second_review["code_context"]}],
+        repository="octo/demo",
+        pr_number=12,
+        head_sha="new-head",
+        reviewed_files=["src/app.py"],
+    )
+
+    assert first_id == second_id
+    assert len(compared["existing_findings"]) == 1
+    assert compared["resolved_findings"] == []
+    assert compared["new_findings"] == []
+
+
 def test_comparison_classifies_new_existing_and_resolved_findings():
     previous = [record("A", "A"), record("B", "B"), record("C", "C")]
     current = [
@@ -347,3 +376,54 @@ def test_finalize_persists_new_thread_id(monkeypatch):
     assert calls[-1][0] == "update_issue_comment"
     saved = json.loads(calls[-1][1]["body"].split("\n", 1)[1].rsplit("\n-->", 1)[0])
     assert saved["findings"][0]["thread_id"] == "thread-new"
+
+
+def test_finalize_matches_graphql_thread_metadata(monkeypatch):
+    calls = []
+    saved_records = []
+    threads = [{
+        "id": "PRRT_thread-new",
+        "isResolved": False,
+        "comments": {
+            "nodes": [{
+                "body": "new review body",
+                "path": "./src/app.py",
+                "author": {"login": "github-actions[bot]"},
+            }],
+        },
+    }]
+
+    def responder(name, arguments):
+        if arguments.get("method") == "get_comments":
+            return mcp_payload([state_comment(91, saved_records)])
+        if arguments.get("method") == "get_review_comments":
+            return mcp_payload({"review_threads": threads, "pageInfo": {"hasNextPage": False}})
+        return mcp_json_text({"id": "91"})
+
+    install_fake_lifecycle_mcp(monkeypatch, responder, calls)
+    manager = GitHubMCPFindingLifecycle(GitHubMCPProvider(token="test-token"))
+    compared = {
+        "records": [{**record("D", "D"), "thread_id": None, "inline_body": "new review body"}],
+        "state_comment_id": 91,
+        "thread_ids_before": set(),
+    }
+
+    finalized = asyncio.run(manager.finalize("octo", "demo", 12, compared))
+
+    assert finalized["records"][0]["thread_id"] == "PRRT_thread-new"
+    saved = json.loads(calls[-1][1]["body"].split("\n", 1)[1].rsplit("\n-->", 1)[0])
+    assert saved["findings"][0]["thread_id"] == "PRRT_thread-new"
+    saved_records.extend(saved["findings"])
+
+    second_review = asyncio.run(manager.reconcile(
+        "octo", "demo", 12, "next-head", [], ["src/app.py"],
+    ))
+
+    assert [item["finding_id"] for item in second_review["resolved_findings"]] == ["D"]
+    assert second_review["resolved_findings"][0]["thread_id"] == "PRRT_thread-new"
+    assert any(
+        name == "pull_request_review_write"
+        and arguments.get("method") == "resolve_thread"
+        and arguments.get("threadId") == "PRRT_thread-new"
+        for name, arguments in calls
+    )
