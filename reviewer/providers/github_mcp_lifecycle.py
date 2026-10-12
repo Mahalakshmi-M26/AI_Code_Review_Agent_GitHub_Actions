@@ -304,13 +304,28 @@ class GitHubMCPFindingLifecycle:
             )
             records_by_id = {str(record["finding_id"]): record for record in comparison["records"]}
 
+            print(f"[P3] Previous findings: {len(previous_records)}")
+            print(f"[P3] Current findings: {len(current)}")
+            print(f"[P3] Resolved findings: {len(comparison['resolved_findings'])}")
+
             for finding in comparison["resolved_findings"]:
+                print(
+                    f"[P3] Resolving finding "
+                    f"{finding.get('finding_id')} "
+                    f"thread={finding.get('thread_id')}"
+                )
                 thread_id = finding.get("thread_id")
                 thread = threads_by_id.get(str(thread_id)) if thread_id else None
                 if thread is not None and not self._thread_resolved(thread):
+                    print(f"[P3] MCP resolve_thread {thread_id}")
                     await self._set_thread_resolution(session, owner, repo, pull_number, str(thread_id), True)
 
             for finding in comparison["existing_findings"]:
+                print(
+                    f"[P3] Existing finding "
+                    f"{finding.get('finding_id')} "
+                    f"thread_id={finding.get('thread_id')}"
+                )
                 thread_id = finding.get("thread_id")
                 thread = threads_by_id.get(str(thread_id)) if thread_id else None
                 if thread is not None and self._thread_resolved(thread):
@@ -351,6 +366,10 @@ class GitHubMCPFindingLifecycle:
                 if len(matches) == 1:
                     thread_id = self._thread_id(matches[0])
                     finding["thread_id"] = thread_id
+                    print(
+                        f"[P3] Thread associated "
+                        f"{finding['finding_id']} -> {thread_id}"
+                    )
                     used_ids.add(str(thread_id))
 
             state_comment_id = comparison.get("state_comment_id")
