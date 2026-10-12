@@ -21,6 +21,7 @@ class GitHubMCPFindingLifecycle:
 
     PAGE_SIZE = 100
     STATE_AUTHOR = "github-actions[bot]"
+    REVIEW_COMMENT_AUTHORS = {"github-actions", STATE_AUTHOR}
 
     def __init__(self, provider: GitHubMCPProvider) -> None:
         self.provider = provider
@@ -163,14 +164,27 @@ class GitHubMCPFindingLifecycle:
             body = comment.get("body")
             path = comment.get("path")
             author = cls._comment_author(comment)
+            extracted_marker = extract_finding_id_marker(body) if isinstance(body, str) else None
+            path_matches = (
+                isinstance(path, str)
+                and normalize_file_path(path) == normalize_file_path(expected_path)
+            )
+            author_matches = author in cls.REVIEW_COMMENT_AUTHORS
+            print(f"[P3] EXTRACTED_MARKER={extracted_marker}")
+            print(f"[P3] EXPECTED_FINDING_ID={expected_finding_id}")
+            print(f"[P3] AUTHOR={author}")
+            print(f"[P3] AUTHOR_MATCH={author_matches}")
+            print(f"[P3] PATH_MATCH={path_matches}")
 
             if (
-                isinstance(body, str)
-                and extract_finding_id_marker(body) == expected_finding_id
-                and isinstance(path, str)
-                and normalize_file_path(path) == normalize_file_path(expected_path)
-                and author == cls.STATE_AUTHOR
+                extracted_marker == expected_finding_id
+                and path_matches
+                and author_matches
             ):
+                print(
+                    f"[P3] MATCH FOUND finding={expected_finding_id} "
+                    f"thread={thread.get('id')}"
+                )
                 return True
         return False
 
@@ -417,16 +431,8 @@ class GitHubMCPFindingLifecycle:
                     thread_id = self._thread_id(matches[0])
                     finding["thread_id"] = thread_id
                     print(
-                        f"[P3] Thread mapped: "
-                        f"{finding.get('finding_id')} -> {thread_id}"
-                    )
-                    print(
-                        f"[P3] Thread associated "
-                        f"{finding['finding_id']} -> {thread_id}"
-                    )
-                    print(
-                        f"[P3] Thread mapped: "
-                        f"{finding.get('finding_id')} -> {thread_id}"
+                        f"[P3] SAVING THREAD "
+                        f"finding={finding['finding_id']} thread={thread_id}"
                     )
                     used_ids.add(str(thread_id))
 

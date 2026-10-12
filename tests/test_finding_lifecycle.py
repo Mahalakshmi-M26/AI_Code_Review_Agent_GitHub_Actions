@@ -384,17 +384,19 @@ def test_finalize_persists_new_thread_id(monkeypatch):
     assert saved["findings"][0]["thread_id"] == "thread-new"
 
 
-def test_finalize_matches_graphql_thread_metadata(monkeypatch):
+def test_finalize_matches_mcp_author_and_resolves_thread(monkeypatch, capsys):
     calls = []
     saved_records = []
+    finding_id = "f64d466c6acb9fd760d2eb11ddcab34f4b937e13e7bc92f0df899e6d98e9116c"
+    thread_id = "PRRT_kwDOUUd-4M6rfsAA"
     threads = [{
-        "id": "PRRT_thread-new",
+        "id": thread_id,
         "isResolved": False,
         "comments": {
             "nodes": [{
-                "body": "MCP changed this comment text\n\n<!-- ai-review-finding-id:D -->",
+                "body": f"MCP changed this comment text\n\n<!-- ai-review-finding-id:{finding_id} -->",
                 "path": "./src/app.py",
-                "author": {"login": "github-actions[bot]"},
+                "author": "github-actions",
             }],
         },
     }]
@@ -410,7 +412,7 @@ def test_finalize_matches_graphql_thread_metadata(monkeypatch):
     manager = GitHubMCPFindingLifecycle(GitHubMCPProvider(token="test-token"))
     compared = {
         "records": [{
-            **record("D", "D"),
+            **record(finding_id, "D"),
             "thread_id": None,
             "inline_body": "new review body",
         }],
@@ -420,20 +422,29 @@ def test_finalize_matches_graphql_thread_metadata(monkeypatch):
 
     finalized = asyncio.run(manager.finalize("octo", "demo", 12, compared))
 
-    assert finalized["records"][0]["thread_id"] == "PRRT_thread-new"
+    assert finalized["records"][0]["thread_id"] == thread_id
     saved = json.loads(calls[-1][1]["body"].split("\n", 1)[1].rsplit("\n-->", 1)[0])
-    assert saved["findings"][0]["thread_id"] == "PRRT_thread-new"
+    assert saved["findings"][0]["finding_id"] == finding_id
+    assert saved["findings"][0]["thread_id"] == thread_id
+    output = capsys.readouterr().out
+    assert f"[P3] EXTRACTED_MARKER={finding_id}" in output
+    assert f"[P3] EXPECTED_FINDING_ID={finding_id}" in output
+    assert "[P3] AUTHOR=github-actions" in output
+    assert "[P3] AUTHOR_MATCH=True" in output
+    assert "[P3] PATH_MATCH=True" in output
+    assert f"[P3] MATCH FOUND finding={finding_id} thread={thread_id}" in output
+    assert f"[P3] SAVING THREAD finding={finding_id} thread={thread_id}" in output
     saved_records.extend(saved["findings"])
 
     second_review = asyncio.run(manager.reconcile(
         "octo", "demo", 12, "next-head", [], ["src/app.py"],
     ))
 
-    assert [item["finding_id"] for item in second_review["resolved_findings"]] == ["D"]
-    assert second_review["resolved_findings"][0]["thread_id"] == "PRRT_thread-new"
+    assert [item["finding_id"] for item in second_review["resolved_findings"]] == [finding_id]
+    assert second_review["resolved_findings"][0]["thread_id"] == thread_id
     assert any(
         name == "pull_request_review_write"
         and arguments.get("method") == "resolve_thread"
-        and arguments.get("threadId") == "PRRT_thread-new"
+        and arguments.get("threadId") == thread_id
         for name, arguments in calls
     )

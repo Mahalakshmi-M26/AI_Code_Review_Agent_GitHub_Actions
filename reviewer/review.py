@@ -266,10 +266,10 @@ def extract_finding_id_marker(body: str) -> str | None:
     if marker_start < 0:
         return None
     value_start = marker_start + len(FINDING_ID_MARKER_PREFIX)
-    marker_end = body.find(" -->", value_start)
+    marker_end = body.find("-->", value_start)
     if marker_end < 0:
         return None
-    finding_id = body[value_start:marker_end]
+    finding_id = body[value_start:marker_end].strip()
     return finding_id or None
 
 
