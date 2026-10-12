@@ -130,13 +130,19 @@ def post_review_with_lifecycle(
     if review_result is not None:
         seen_new_ids: set[str] = set()
         new_findings = []
+        comment_finding_ids = []
         for finding, record in zip(review_result.findings, lifecycle_findings):
             finding_id = record["finding_id"]
             if finding_id in new_finding_ids and finding_id not in seen_new_ids:
                 new_findings.append(finding)
+                comment_finding_ids.append(finding_id)
                 seen_new_ids.add(finding_id)
         new_result = review_result.model_copy(update={"findings": new_findings})
-        review_payload["comments"] = build_inline_review_comments(new_result, changed_line_map or {})
+        review_payload["comments"] = build_inline_review_comments(
+            new_result,
+            changed_line_map or {},
+            comment_finding_ids,
+        )
     else:
         review_payload["comments"] = []
 

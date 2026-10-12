@@ -13,6 +13,7 @@ from reviewer.finding_lifecycle import (
     normalize_file_path,
 )
 from reviewer.providers.github_mcp import GitHubMCPProvider
+from reviewer.review import extract_finding_id_marker
 
 
 class GitHubMCPFindingLifecycle:
@@ -144,7 +145,7 @@ class GitHubMCPFindingLifecycle:
 
     @classmethod
     def _comment_matches(cls, thread: dict[str, Any], finding: dict[str, Any]) -> bool:
-        expected_body = finding.get("inline_body")
+        expected_finding_id = finding.get("finding_id")
         expected_path = finding.get("file")
 
         print(
@@ -152,7 +153,7 @@ class GitHubMCPFindingLifecycle:
             f"path={expected_path}"
         )
 
-        if not isinstance(expected_body, str) or not expected_body:
+        if not isinstance(expected_finding_id, str) or not expected_finding_id:
             return False
 
         if not isinstance(expected_path, str):
@@ -164,7 +165,8 @@ class GitHubMCPFindingLifecycle:
             author = cls._comment_author(comment)
 
             if (
-                body == expected_body
+                isinstance(body, str)
+                and extract_finding_id_marker(body) == expected_finding_id
                 and isinstance(path, str)
                 and normalize_file_path(path) == normalize_file_path(expected_path)
                 and author == cls.STATE_AUTHOR

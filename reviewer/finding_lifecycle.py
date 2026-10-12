@@ -85,10 +85,11 @@ def build_finding_records(
     records: list[dict[str, Any]] = []
     for finding in result.findings:
         code_context = _source_code_context(finding, changed_line_map, target_repo_path)
+        finding_id = finding_fingerprint(finding, code_context)
         single_finding_result = result.model_copy(update={"findings": [finding]})
-        comments = build_inline_review_comments(single_finding_result, changed_line_map)
+        comments = build_inline_review_comments(single_finding_result, changed_line_map, [finding_id])
         records.append({
-            "finding_id": finding_fingerprint(finding, code_context),
+            "finding_id": finding_id,
             "thread_id": None,
             "status": "open",
             "file": normalize_file_path(finding.file),

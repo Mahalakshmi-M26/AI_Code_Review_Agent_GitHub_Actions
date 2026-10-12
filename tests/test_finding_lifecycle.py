@@ -309,8 +309,11 @@ def test_reconcile_reopens_returning_resolved_finding(monkeypatch):
 
 def test_existing_thread_without_saved_state_suppresses_duplicate(monkeypatch):
     calls = []
-    current = {**record("A", "A"), "thread_id": None, "inline_body": "same review body"}
-    threads = [review_thread("thread-existing", "same review body")]
+    current = {**record("A", "A"), "thread_id": None, "inline_body": "original review body"}
+    threads = [review_thread(
+        "thread-existing",
+        "wording changed on rerun\n\n<!-- ai-review-finding-id:A -->",
+    )]
 
     def responder(name, arguments):
         if arguments.get("method") == "get_comments":
@@ -355,7 +358,10 @@ def test_open_finding_without_thread_is_retried_as_new(monkeypatch):
 
 def test_finalize_persists_new_thread_id(monkeypatch):
     calls = []
-    threads = [review_thread("thread-new", "new review body")]
+    threads = [review_thread(
+        "thread-new",
+        "new review body\n\n<!-- ai-review-finding-id:D -->",
+    )]
 
     def responder(name, arguments):
         if arguments.get("method") == "get_review_comments":
@@ -386,7 +392,7 @@ def test_finalize_matches_graphql_thread_metadata(monkeypatch):
         "isResolved": False,
         "comments": {
             "nodes": [{
-                "body": "new review body",
+                "body": "MCP changed this comment text\n\n<!-- ai-review-finding-id:D -->",
                 "path": "./src/app.py",
                 "author": {"login": "github-actions[bot]"},
             }],
@@ -403,7 +409,11 @@ def test_finalize_matches_graphql_thread_metadata(monkeypatch):
     install_fake_lifecycle_mcp(monkeypatch, responder, calls)
     manager = GitHubMCPFindingLifecycle(GitHubMCPProvider(token="test-token"))
     compared = {
-        "records": [{**record("D", "D"), "thread_id": None, "inline_body": "new review body"}],
+        "records": [{
+            **record("D", "D"),
+            "thread_id": None,
+            "inline_body": "new review body",
+        }],
         "state_comment_id": 91,
         "thread_ids_before": set(),
     }

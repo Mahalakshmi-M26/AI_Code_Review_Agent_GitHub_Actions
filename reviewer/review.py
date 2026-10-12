@@ -13,6 +13,7 @@ MAX_FILES = 40
 MAX_FILE_DIFF_CHARS = 12000
 MAX_REVIEW_INPUT_CHARS = 100000
 REVIEW_TIMEOUT_SECONDS = 60
+FINDING_ID_MARKER_PREFIX = "<!-- ai-review-finding-id:"
 
 IGNORED_PREFIXES = (
     "node_modules/",
@@ -256,9 +257,26 @@ def validate_finding_lines(
     return result.model_copy(update={"findings": findings})
 
 
+def finding_id_marker(finding_id: str) -> str:
+    return f"{FINDING_ID_MARKER_PREFIX}{finding_id} -->"
+
+
+def extract_finding_id_marker(body: str) -> str | None:
+    marker_start = body.rfind(FINDING_ID_MARKER_PREFIX)
+    if marker_start < 0:
+        return None
+    value_start = marker_start + len(FINDING_ID_MARKER_PREFIX)
+    marker_end = body.find(" -->", value_start)
+    if marker_end < 0:
+        return None
+    finding_id = body[value_start:marker_end]
+    return finding_id or None
+
+
 def build_inline_review_comments(
     result: ReviewResult,
     changed_line_map: dict[str, list[dict[str, int | str]]],
+    finding_ids: list[str] | None = None,
 ) -> list[dict[str, Any]]:
     """Create GitHub review comments only for validated added-line locations."""
     valid_lines = {
@@ -266,7 +284,7 @@ def build_inline_review_comments(
         for file_name, entries in changed_line_map.items()
     }
     comments: list[dict[str, Any]] = []
-    for finding in result.findings:
+    for index, finding in enumerate(result.findings):
         if (
             finding.line is None
             or finding.file not in valid_lines
@@ -290,6 +308,8 @@ def build_inline_review_comments(
             f"**Recommendation:** {finding.recommendation}",
             f"**Suggested Fix:** {finding.suggested_fix or 'No safe code suggestion provided.'}",
         ])
+        if finding_ids is not None and index < len(finding_ids):
+            body = f"{body}\n\n{finding_id_marker(finding_ids[index])}"
         comments.append({
             "path": finding.file,
             "line": finding.line,

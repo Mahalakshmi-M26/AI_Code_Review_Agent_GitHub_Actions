@@ -223,5 +223,6 @@ def test_lifecycle_publishes_inline_comment_only_for_new_finding():
     assert len(posted[0]["comments"]) == 1
     assert "New pagination issue" in posted[0]["comments"][0]["body"]
     assert "Existing validation" not in posted[0]["comments"][0]["body"]
+    assert f"<!-- ai-review-finding-id:{finalized[0]['new_findings'][0]['finding_id']} -->" in posted[0]["comments"][0]["body"]
     assert "## Finding Lifecycle" in posted[0]["body"]
     assert len(finalized) == 1
