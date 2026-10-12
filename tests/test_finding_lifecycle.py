@@ -437,3 +437,11 @@ def test_finalize_matches_graphql_thread_metadata(monkeypatch):
         and arguments.get("threadId") == "PRRT_thread-new"
         for name, arguments in calls
     )
+
+def test_normalize_file_path_preserves_unicode_and_empty_paths():
+    """Unicode paths must remain matchable; blank optional paths stay blank."""
+    from reviewer.finding_lifecycle import normalize_file_path
+
+    assert normalize_file_path("  ./src\\naïve\\東京.py  ") == "src/naïve/東京.py"
+    assert normalize_file_path("") == ""
+    assert normalize_file_path("\u2003") == ""
