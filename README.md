@@ -47,9 +47,15 @@ on:
 jobs:
   review:
     uses: <central-org>/<central-repo>/.github/workflows/ai-code-review-reusable.yml@main
+    permissions:
+      contents: read
+      pull-requests: write
+      issues: write
     secrets:
       GEP_API_KEY: ${{ secrets.GEP_API_KEY }}
 ```
+
+The caller must grant these permissions; a reusable workflow cannot elevate the caller's `GITHUB_TOKEN` permissions. For fork pull requests triggered with `pull_request`, GitHub normally downgrades write permissions to read-only unless repository Actions settings explicitly allow write tokens for fork PRs. The reusable workflow logs the event name, token source, declared permissions, and fork status without printing the token value.
 
 The reusable job checks out the central reviewer and the target PR, uses Python 3.12, installs `requirements.txt`, starts the official GitHub MCP Server using Docker/stdio, and runs `python -m reviewer.main`.
 

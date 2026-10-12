@@ -33,6 +33,23 @@ jobs:
       REVIEW_TIMEOUT_SECONDS: ${{ vars.REVIEW_TIMEOUT_SECONDS || '60' }}
 
     steps:
+      - name: Log GitHub event and token permission context
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          TOKEN_SOURCE: github.token
+          DECLARED_TOKEN_PERMISSIONS: "contents: read, pull-requests: write, issues: write"
+          BASE_REPOSITORY: ${{ github.repository }}
+          HEAD_REPOSITORY: ${{ github.event.pull_request.head.repo.full_name }}
+          PR_IS_FROM_FORK: ${{ github.event.pull_request.head.repo.full_name != github.repository }}
+        run: |
+          echo "[AUTH] Event name: ${EVENT_NAME}"
+          echo "[AUTH] MCP token source: ${TOKEN_SOURCE} (value is intentionally not logged)"
+          echo "[AUTH] Permissions declared by reusable job: ${DECLARED_TOKEN_PERMISSIONS}"
+          echo "[AUTH] Base repository: ${BASE_REPOSITORY}"
+          echo "[AUTH] PR head repository: ${HEAD_REPOSITORY}"
+          echo "[AUTH] PR is from fork: ${PR_IS_FROM_FORK}"
+          echo "[AUTH] Effective token permissions can be narrower due to caller permissions, repository policy, or fork-PR restrictions."
+
       - name: Check out the central reviewer repository
         uses: actions/checkout@v4
         with:
