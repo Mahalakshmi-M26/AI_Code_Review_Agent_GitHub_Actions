@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from contextlib import asynccontextmanager
+import traceback
 from typing import Any, AsyncIterator
 
 from mcp import ClientSession
@@ -26,13 +27,33 @@ class GitHubMCPFindingLifecycle:
     def __init__(self, provider: GitHubMCPProvider) -> None:
         self.provider = provider
 
+    @staticmethod
+    def _log_exception_group(exception_group: BaseExceptionGroup[Any], depth: int = 0) -> None:
+        indent = "  " * depth
+        for index, exception in enumerate(exception_group.exceptions):
+            print(f"[DEBUG] {indent}Sub-exception #{index}")
+            print(f"[DEBUG] {indent}Type: {type(exception).__name__}")
+            print(f"[DEBUG] {indent}Message: {exception}")
+            traceback.print_exception(exception)
+            if isinstance(exception, BaseExceptionGroup):
+                print(f"[DEBUG] {indent}Nested exception group contents:")
+                GitHubMCPFindingLifecycle._log_exception_group(exception, depth + 1)
+
     @asynccontextmanager
     async def _session(self) -> AsyncIterator[ClientSession]:
         transport = stdio_client(self.provider.build_server_parameters())
-        async with transport as (read, write):
-            async with ClientSession(read, write) as session:
-                await session.initialize()
-                yield session
+        try:
+            async with transport as (read, write):
+                async with ClientSession(read, write) as session:
+                    await session.initialize()
+                    yield session
+        except* Exception as exception_group:
+            print("[DEBUG] ExceptionGroup detected while running GitHub MCP lifecycle operation")
+            print(f"[DEBUG] ExceptionGroup type: {type(exception_group).__name__}")
+            print(f"[DEBUG] ExceptionGroup message: {exception_group}")
+            traceback.print_exception(exception_group)
+            self._log_exception_group(exception_group)
+            raise
 
     async def _call(self, session: ClientSession, tool_name: str, arguments: dict[str, Any]) -> Any:
         result = await session.call_tool(tool_name, arguments)

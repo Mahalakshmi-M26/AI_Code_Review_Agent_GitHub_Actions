@@ -1,6 +1,7 @@
 import asyncio
 import json
 
+import pytest
 from mcp.types import CallToolResult, TextContent
 
 from reviewer.finding_lifecycle import (
@@ -45,6 +46,53 @@ def install_fake_lifecycle_mcp(monkeypatch, responder, calls):
 
     monkeypatch.setattr(lifecycle_module, "stdio_client", lambda params: FakeTransport())
     monkeypatch.setattr(lifecycle_module, "ClientSession", FakeSession)
+
+
+def test_lifecycle_session_logs_nested_exception_groups(monkeypatch, capsys):
+    import reviewer.providers.github_mcp_lifecycle as lifecycle_module
+
+    class FakeSession:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return None
+
+        async def initialize(self):
+            return None
+
+    class FailingTransport:
+        async def __aenter__(self):
+            return object(), object()
+
+        async def __aexit__(self, exc_type, exc, tb):
+            raise ExceptionGroup("MCP task group", [
+                ValueError("GitHub API rejected the request"),
+                ExceptionGroup("transport shutdown", [RuntimeError("stdio closed unexpectedly")]),
+            ])
+
+    monkeypatch.setattr(lifecycle_module, "stdio_client", lambda params: FailingTransport())
+    monkeypatch.setattr(lifecycle_module, "ClientSession", FakeSession)
+    manager = GitHubMCPFindingLifecycle(GitHubMCPProvider(token="test-token"))
+
+    async def run_session():
+        async with manager._session():
+            pass
+
+    with pytest.raises(ExceptionGroup, match="MCP task group"):
+        asyncio.run(run_session())
+
+    output = capsys.readouterr()
+    logged = output.out + output.err
+    assert "[DEBUG] ExceptionGroup detected" in logged
+    assert "ValueError" in logged
+    assert "GitHub API rejected the request" in logged
+    assert "RuntimeError" in logged
+    assert "stdio closed unexpectedly" in logged
+    assert "Traceback (most recent call last)" in logged
 
 
 def mcp_payload(payload):
