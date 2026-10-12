@@ -56,9 +56,74 @@ class GitHubMCPFindingLifecycle:
             raise
 
     async def _call(self, session: ClientSession, tool_name: str, arguments: dict[str, Any]) -> Any:
+        is_resolve_thread = (
+            tool_name == "pull_request_review_write"
+            and arguments.get("method") == "resolve_thread"
+        )
+        if is_resolve_thread:
+            print("[MCP REQUEST] Tool: pull_request_review_write")
+            print(f"[MCP REQUEST] Arguments: {arguments!r}")
+            print(
+                f"[MCP REQUEST] owner={arguments.get('owner')!r} "
+                f"repo={arguments.get('repo')!r} "
+                f"pull_number={arguments.get('pullNumber')!r} "
+                f"thread_id={arguments.get('threadId')!r}"
+            )
+            print(f"[MCP REQUEST] Payload structure: {arguments!r}")
+            try:
+                tools_response = await session.list_tools()
+                raw_tools = getattr(tools_response, "tools", None)
+                if raw_tools is None and isinstance(tools_response, dict):
+                    raw_tools = tools_response.get("tools", [])
+                for tool in raw_tools or []:
+                    normalized = self.provider._normalize_tool(tool)
+                    if normalized.get("name") == tool_name:
+                        print("[MCP SCHEMA] pull_request_review_write inputSchema:")
+                        print(repr(normalized.get("inputSchema") or normalized.get("input_schema")))
+                        break
+                else:
+                    print("[MCP SCHEMA] pull_request_review_write not found in list_tools response")
+            except Exception as schema_error:
+                print("[MCP SCHEMA] Could not inspect pull_request_review_write schema:")
+                print(f"{type(schema_error).__name__}: {schema_error}")
+
         result = await session.call_tool(tool_name, arguments)
-        if self.provider._result_error(result):
+        result_is_error = self.provider._result_error(result)
+        if is_resolve_thread:
+            print("[MCP RESPONSE] Raw result:")
+            print(result)
+            print("[MCP RESPONSE] repr(result):")
+            print(repr(result))
+            print(f"[MCP RESPONSE] _result_error(result)={result_is_error!r}")
+            try:
+                content = self.provider._result_content(result)
+                print("[MCP RESPONSE] Result content:")
+                print(content)
+                try:
+                    decoded = self.provider._decode_json_payload(content, "resolve_thread")
+                    print("[MCP RESPONSE] Decoded payload:")
+                    print(repr(decoded))
+                except Exception as decode_error:
+                    print(f"[MCP RESPONSE] Payload decode failed: {type(decode_error).__name__}: {decode_error}")
+            except Exception as content_error:
+                print(f"[MCP RESPONSE] Content extraction failed: {type(content_error).__name__}: {content_error}")
+
+        if result_is_error:
             method = arguments.get("method", tool_name)
+            print("[MCP ERROR] Tool response:")
+            print(repr(result))
+            try:
+                content = self.provider._result_content(result)
+                print("[MCP ERROR] Result content:")
+                print(content)
+                print("[MCP ERROR] Decoded payload:")
+                try:
+                    print(self.provider._decode_json_payload(content, str(method)))
+                except Exception as decode_error:
+                    print(f"[MCP ERROR] Could not decode payload: {type(decode_error).__name__}: {decode_error}")
+            except Exception as content_error:
+                print("[MCP ERROR] Result content unavailable:")
+                print(f"{type(content_error).__name__}: {content_error}")
             raise RuntimeError(f"MCP {tool_name} ({method}) returned a tool error.")
         return result
 

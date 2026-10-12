@@ -95,6 +95,58 @@ def test_lifecycle_session_logs_nested_exception_groups(monkeypatch, capsys):
     assert "Traceback (most recent call last)" in logged
 
 
+def test_lifecycle_tool_error_logs_full_mcp_payload(capsys):
+    payload = {
+        "message": "GraphQL mutation failed",
+        "error": "thread is already resolved",
+        "details": {"threadId": "PRRT_example"},
+        "type": "NOT_FOUND",
+        "extensions": {"code": "NOT_FOUND"},
+    }
+
+    class ErrorSession:
+        async def list_tools(self):
+            return {"tools": [{
+                "name": "pull_request_review_write",
+                "inputSchema": {
+                    "type": "object",
+                    "required": ["method", "owner", "repo", "pullNumber", "threadId"],
+                },
+            }]}
+
+        async def call_tool(self, name, arguments):
+            return CallToolResult(content=[], structured_content=payload, is_error=True)
+
+    manager = GitHubMCPFindingLifecycle(GitHubMCPProvider(token="test-token"))
+
+    with pytest.raises(RuntimeError, match="resolve_thread.*tool error"):
+        asyncio.run(manager._call(
+            ErrorSession(),
+            "pull_request_review_write",
+            {
+                "method": "resolve_thread",
+                "owner": "octo",
+                "repo": "demo",
+                "pullNumber": 12,
+                "threadId": "PRRT_example",
+            },
+        ))
+
+    output = capsys.readouterr().out
+    assert "[MCP REQUEST] owner='octo' repo='demo' pull_number=12 thread_id='PRRT_example'" in output
+    assert "'pullNumber': 12" in output
+    assert "'threadId': 'PRRT_example'" in output
+    assert "[MCP SCHEMA] pull_request_review_write inputSchema:" in output
+    assert "'required': ['method', 'owner', 'repo', 'pullNumber', 'threadId']" in output
+    assert "[MCP RESPONSE] repr(result):" in output
+    assert "[MCP RESPONSE] _result_error(result)=True" in output
+    assert "[MCP ERROR] Tool response:" in output
+    assert "[MCP ERROR] Result content:" in output
+    assert "[MCP ERROR] Decoded payload:" in output
+    for detail in ("GraphQL mutation failed", "thread is already resolved", "PRRT_example", "NOT_FOUND"):
+        assert detail in output
+
+
 def mcp_payload(payload):
     return CallToolResult(content=[], structured_content=payload, is_error=False)
 
