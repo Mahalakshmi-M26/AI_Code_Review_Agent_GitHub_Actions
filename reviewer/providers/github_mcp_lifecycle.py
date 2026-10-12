@@ -370,9 +370,21 @@ class GitHubMCPFindingLifecycle:
                         f"[P3] Thread associated "
                         f"{finding['finding_id']} -> {thread_id}"
                     )
+                    print(
+                        f"[P3] Thread mapped: "
+                        f"{finding.get('finding_id')} -> {thread_id}"
+                    )
                     used_ids.add(str(thread_id))
 
             state_comment_id = comparison.get("state_comment_id")
+            print("[P3] Saving lifecycle state")
+
+            for record in records:
+                print(
+                    f"[P3] State: "
+                    f"{record.get('finding_id')} "
+                    f"thread={record.get('thread_id')}"
+                )
             await self._save_state(session, owner, repo, pull_number, state_comment_id, records)
             comparison["records"] = records
             return comparison
