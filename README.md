@@ -21,6 +21,8 @@ Consumer Pull Request
        -> enterprise policy + Capgemini Generative Engine HTTP request
        -> structured JSON + Pydantic validation
        -> deterministic file/line validation
+      -> finding fingerprints + durable lifecycle state
+      -> resolve/reopen tracked GitHub review threads
        -> enterprise Markdown summary + eligible inline comments
        -> official GitHub MCP Server: create pending review
        -> add_comment_to_pending_review for validated lines
@@ -53,7 +55,7 @@ The reusable job checks out the central reviewer and the target PR, uses Python 
 
 ## GitHub MCP integration
 
-The Python MCP SDK connects over stdio to `ghcr.io/github/github-mcp-server` (live-validated v2.0.1). Actions provides its short-lived `GITHUB_TOKEN` to the MCP server as `GITHUB_PERSONAL_ACCESS_TOKEN`. The application uses `pull_request_read` for changed-file metadata and patches, and `pull_request_review_write` plus `add_comment_to_pending_review` to publish a Pull Request review. It does not call GitHub REST directly.
+The Python MCP SDK connects over stdio to `ghcr.io/github/github-mcp-server` (live-validated v2.0.1). Actions provides its short-lived `GITHUB_TOKEN` to the MCP server as `GITHUB_PERSONAL_ACCESS_TOKEN`. P1/P2 reads and review publication remain unchanged. P3 additionally uses `pull_request_read(get_review_comments)` and `pull_request_review_write(resolve_thread|unresolve_thread)` for thread lifecycle, plus MCP issue-comment tools for durable hidden state. The application does not call GitHub REST directly.
 
 ### MCP READ
 
@@ -80,11 +82,11 @@ The prompt marks PR title, description, filenames, comments, and code as untrust
 - **Rename-only or metadata-only files:** a diff section with no content hunk has no reviewable patch. It is retained with a skip reason and no inline line is invented.
 - **Mixed PR:** files with real hunks continue through normal review; metadata-only files are skipped.
 - **Zero effective changes:** an empty successful `get_files` result means there is no current diff. The agent skips `get_diff` and GEP, then posts a concise summary-only MCP COMMENT advisory tied to the current head SHA. No findings or inline comments are fabricated.
-- **Fix pushed to an existing PR:** `synchronize` reruns the workflow against the current revision. A reverted/fixed change is not re-reported if it is no longer in the current diff. Automatic detection/resolution of older review threads is not implemented; it is P3 roadmap work.
+- **Fix pushed to an existing PR:** `synchronize` reruns the workflow against the current revision. Tracked findings no longer present in a completely reviewed file are marked resolved and their review threads are resolved through MCP. Incomplete/truncated reviews do not resolve findings outside reliable coverage.
 
 ## Configuration and permissions
 
-Required secret: `GEP_API_KEY` for normal AI reviews. The zero-change code path skips GEP and does not require the key at runtime. GitHub Actions supplies `GITHUB_TOKEN` to MCP. The reusable workflow requests `contents: read` and `pull-requests: write`.
+Required secret: `GEP_API_KEY` for normal AI reviews. The zero-change code path skips GEP and does not require the key at runtime. GitHub Actions supplies `GITHUB_TOKEN` to MCP. The reusable workflow requests `contents: read`, `pull-requests: write`, and `issues: write` for the hidden lifecycle state comment.
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
@@ -99,13 +101,43 @@ Required secret: `GEP_API_KEY` for normal AI reviews. The zero-change code path 
 
 MCP connection/tool/parse failures stop the workflow clearly; there is no REST fallback. Malformed model JSON, schema failures, GEP HTTP errors, and timeouts stop normal AI publication. Pending MCP reviews are cleaned up best-effort when later publishing stages fail. Empty and metadata-only diffs are handled without GEP.
 
-The generic AI review path has been validated using Python, Java, and JavaScript PR changes. The agent does not automatically run dedicated compilers, linters, static-analysis tools, or target-repository tests. It does not deduplicate findings, track finding identity across commits, or automatically resolve old review threads. Input bounds can truncate context. This is an enterprise-oriented POC, not a production-certified system.
+The generic AI review path has been validated using Python, Java, and JavaScript PR changes. The agent does not automatically run dedicated compilers, linters, static-analysis tools, or target-repository tests. Existing review-comment bodies cannot be edited through the supported MCP tools; lifecycle management resolves or reopens threads instead. Input bounds can truncate context, in which case lifecycle resolution is conservative. This is an enterprise-oriented POC, not a production-certified system.
+
+## To Use it with another Repository
+
+1.	Add the reusable workflow reference.
+2.	Configure the required secrets and environment variables.
+3.	Open/update a Pull Request.
+4.	GitHub Actions automatically triggers the AI review.
+5.	The agent posts a review summary and inline comments directly on the PR.
+
+Step 1: Add Reusable Workflow Call
+  In the consumer repository:
+```yaml
+name: AI PR Review
+on:
+  pull_request:
+    types: [opened, reopened, synchronize]
+jobs:
+  review:
+    uses: <central-org>/<central-repo>/.github/workflows/ai-code-review-reusable.yml@main
+    secrets:
+      GEP_API_KEY: ${{ secrets.GEP_API_KEY }}
+```
+Step 2: Add Required Secrets
+    Repository → Settings → Secrets and Variables → Actions > New Repository secret
+       Name: GEP_API_KEY        Secret: YOUR_API_KEY
+       
+Step 3: Open a Pull Request
+Step 4: GitHub Action Runs
+Step 5: AI Review Generated (Summary + Inline Comments)
+
 
 ## P1 / P2 / P3 status
 
 - **P1 — COMPLETE:** GitHub Actions trigger/runtime, reusable multi-repository workflow, PR lifecycle events, external configuration, and MCP Pull Request reads.
 - **P2 — COMPLETE:** enterprise summary, deterministic added-line mapping, validated inline comments, summary-only findings, pending MCP review, MCP inline comments, MCP COMMENT submission, and human-in-the-loop behavior.
-- **P3 — ROADMAP:** stable finding identity, duplicate suppression, previous/current finding comparison, resolved-finding detection, automatic thread resolution, and review lifecycle management.
+- **P3 — COMPLETE:** stable finding identity, cross-synchronize state, duplicate suppression, resolved-finding detection, and MCP-native review-thread resolve/reopen.
 
 ## Security
 

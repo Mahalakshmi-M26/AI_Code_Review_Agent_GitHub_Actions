@@ -96,6 +96,9 @@ def test_server_parameters_use_official_image_and_toolsets():
     assert params.env["GITHUB_PERSONAL_ACCESS_TOKEN"] == "abc123"
     assert params.env["GITHUB_TOOLSETS"] == "repos,pull_requests"
 
+    lifecycle_params = GitHubMCPProvider(token="abc123").build_server_parameters()
+    assert lifecycle_params.env["GITHUB_TOOLSETS"] == "repos,pull_requests,issues"
+
 
 def test_initialize_and_discover_tools(monkeypatch):
     class FakeSession:

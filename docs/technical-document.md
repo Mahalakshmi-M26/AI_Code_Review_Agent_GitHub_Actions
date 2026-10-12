@@ -1,6 +1,6 @@
 # AI Code Review Agent: Technical Document
 
-**Status:** P1 and P2 are complete and live-validated. P3 remains roadmap. This is an enterprise-oriented proof of concept, not a production-certified system.
+**Status:** P1 and P2 remain complete and live-validated. P3 finding lifecycle management is implemented. This is an enterprise-oriented proof of concept, not a production-certified system.
 
 ## 1. Executive Summary
 
@@ -35,7 +35,7 @@ The central repository contains the reusable workflow, reviewer package, policy,
 
 ## 7. Pull Request Trigger Lifecycle
 
-The caller workflow listens to `opened`, `reopened`, and `synchronize`. Opened starts a review for a new PR, reopened runs when a closed PR is reopened, and synchronize starts a new run when commits update the PR branch. Each run evaluates the current PR revision. A fixed issue no longer present in that revision's diff is not raised again merely because it appeared in an earlier review. Old review-thread resolution is separate P3 work.
+The caller workflow listens to `opened`, `reopened`, and `synchronize`. Opened starts a review for a new PR, reopened runs when a closed PR is reopened, and synchronize starts a new run when commits update the PR branch. Each run evaluates the current PR revision and reconciles persisted finding identities against the current result.
 
 ## 8. GitHub MCP Server Integration
 
@@ -115,7 +115,21 @@ If `get_files` succeeds and returns an empty list, the provider returns an empty
 
 ## 27. Developer Fix / Synchronize Flow
 
-A push to the PR branch triggers `synchronize`, and the reviewer reads the new current diff. A removed/fixed issue no longer in that diff is not re-raised by this run. Persisting finding identities and resolving earlier discussion threads are P3 roadmap features, not implemented behavior.
+A push to the PR branch triggers `synchronize`, and the reviewer reads the new current diff. P3 fingerprints current findings, compares them with saved findings, resolves fixed findings through GitHub MCP, suppresses duplicate inline comments for existing findings, and reopens an earlier thread if that finding returns.
+
+### 27.1 Finding Identity and Durable State
+
+The finding ID is SHA-256 over normalized file path, category, severity, title, and source-code context. Line number is deliberately excluded. Source context comes from the checked-out target file around a validated finding line; summary-only findings use changed-line content from that file as fallback context. This keeps identity stable for ordinary line shifts while allowing materially changed code or finding metadata to become a distinct identity.
+
+The latest state is stored in one hidden HTML-comment block in a Pull Request conversation comment. It contains version, repository, PR number, and finding records with `finding_id`, `thread_id`, `pr_number`, `repository`, `head_sha`, `status`, and the matching details needed for recovery. The first run creates it with MCP `add_issue_comment`; later runs replace it with `update_issue_comment`. The reader accepts only a marker written by `github-actions[bot]` for the matching repository and PR.
+
+Storage tradeoffs: a workflow artifact needs cross-run artifact discovery/download and retention handling; a JSON file on the PR branch pollutes the reviewed change, creates merge conflicts, and is untrusted input. The hidden comment is automatically scoped to the PR and requires no extra external store. It is still user-editable/deletable metadata and is subject to GitHub comment-size limits, so malformed or missing state falls back to matching existing bot review-thread content where possible.
+
+### 27.2 Thread Lifecycle and Coverage
+
+`pull_request_read(method="get_review_comments")` reads paginated thread records including thread ID and `is_resolved`. Existing threads are matched by exact bot-authored comment body and file path, allowing migration from reviews created before the state record existed. New finding comments continue through the unchanged P2 `post_review()` flow; after submission, another MCP thread read associates newly-created threads with finding IDs. Existing findings do not add another inline comment. Missing findings are resolved only when their file was included in a complete, non-truncated review; a confirmed empty PR diff resolves all previously open findings. Partial/truncated coverage never marks unseen findings resolved. Returning findings call `pull_request_review_write(method="unresolve_thread")`; fixed findings call `method="resolve_thread"`.
+
+The P2 summary formatter and pending-review/comment choreography are unchanged. Main orchestration appends a separate Finding Lifecycle section for resolved, new, and existing findings. GitHub MCP cannot edit existing review-comment bodies; corrected text therefore requires a new finding/thread after lifecycle state permits it, rather than editing the old comment.
 
 ## 28. Failure Handling
 
@@ -141,13 +155,13 @@ Secrets are configured in GitHub Actions secrets and are not printed. The built-
 
 **P2 — COMPLETE.** Enterprise summaries, deterministic added-line mapping, validated inline comments, summary-only findings, pending MCP reviews, MCP inline comments, MCP submit with COMMENT, and human-in-the-loop behavior are implemented and live-validated.
 
-## 34. P3 Roadmap
+## 34. P3 Status
 
-**P3 — ROADMAP / NEXT ENHANCEMENT.** Stable finding fingerprints, duplicate suppression, comparison across commits, resolved-finding detection, automatic GitHub review-thread resolution, and review lifecycle management are not implemented.
+**P3 — COMPLETE.** Stable finding fingerprints, durable per-PR state, cross-synchronize comparison, duplicate suppression, resolved-finding detection, and MCP-native review-thread resolution/reopening are implemented. Existing comment-body editing remains unsupported.
 
 ## 35. Current Limitations
 
-No duplicate suppression, persistent finding state, automatic old-thread resolution, language-specific toolchain execution, production metrics, cost telemetry, or production certification is provided. Findings and model output require human judgment. File and character caps can truncate context.
+Lifecycle state is a hidden PR conversation comment and can be manually removed or edited. Existing review-comment bodies cannot be changed through GitHub MCP. Findings outside complete review coverage are intentionally left open. Language-specific toolchain execution, production metrics, cost telemetry, and production certification are not provided. Findings and model output require human judgment. File and character caps can truncate context.
 
 ## 36. Final Demo Flow
 

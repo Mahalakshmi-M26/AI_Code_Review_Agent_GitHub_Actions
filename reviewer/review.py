@@ -45,7 +45,11 @@ BINARY_EXTENSIONS = {
 
 
 def load_policy() -> str:
-    policy_path = Path(__file__).with_name("enterprise_review.md")
+    policy_path = (
+    Path(__file__).parent
+    / "Review_Policy"
+    / "enterprise_review.md"
+    )
     if not policy_path.exists():
         raise FileNotFoundError(f"Review policy not found: {policy_path}")
     return policy_path.read_text(encoding="utf-8")

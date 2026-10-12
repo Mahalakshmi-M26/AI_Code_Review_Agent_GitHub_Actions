@@ -11,6 +11,7 @@ from reviewer.review import (
     MAX_FILES,
     MAX_REVIEW_INPUT_CHARS,
     REVIEW_TIMEOUT_SECONDS,
+    build_inline_review_comments,
     build_review_prompt,
     build_github_review_payload,
     call_capgemini,
@@ -19,7 +20,9 @@ from reviewer.review import (
     validate_result,
     validate_finding_lines,
 )
+from reviewer.finding_lifecycle import append_lifecycle_summary, build_finding_records
 from reviewer.providers.github_mcp import GitHubMCPProvider
+from reviewer.providers.github_mcp_lifecycle import GitHubMCPFindingLifecycle
 
 
 def require_env(name: str) -> str:
@@ -93,6 +96,70 @@ def build_no_change_advisory() -> str:
     )
 
 
+def post_review_with_lifecycle(
+    github_provider: GitHubMCPProvider,
+    lifecycle_provider: GitHubMCPFindingLifecycle,
+    owner: str,
+    repo: str,
+    pr_number: int,
+    head_sha: str | None,
+    review_payload: dict,
+    review_result=None,
+    changed_line_map: dict | None = None,
+    reviewed_files: list[str] | None = None,
+    resolve_unreviewed: bool = False,
+) -> dict:
+    lifecycle_findings = build_finding_records(
+        review_result,
+        changed_line_map or {},
+        os.getenv("TARGET_REPO_PATH"),
+    ) if review_result is not None else []
+    comparison = asyncio.run(
+        lifecycle_provider.reconcile(
+            owner=owner,
+            repo=repo,
+            pull_number=pr_number,
+            head_sha=head_sha or "",
+            current_findings=lifecycle_findings,
+            reviewed_files=reviewed_files or [],
+            resolve_unreviewed=resolve_unreviewed,
+        )
+    )
+
+    new_finding_ids = {item["finding_id"] for item in comparison["new_findings"]}
+    if review_result is not None:
+        seen_new_ids: set[str] = set()
+        new_findings = []
+        for finding, record in zip(review_result.findings, lifecycle_findings):
+            finding_id = record["finding_id"]
+            if finding_id in new_finding_ids and finding_id not in seen_new_ids:
+                new_findings.append(finding)
+                seen_new_ids.add(finding_id)
+        new_result = review_result.model_copy(update={"findings": new_findings})
+        review_payload["comments"] = build_inline_review_comments(new_result, changed_line_map or {})
+    else:
+        review_payload["comments"] = []
+
+    review_payload["body"] = append_lifecycle_summary(review_payload.get("body", ""), comparison)
+    asyncio.run(
+        github_provider.post_review(
+            owner=owner,
+            repo=repo,
+            pull_number=pr_number,
+            review_payload=review_payload,
+        )
+    )
+    asyncio.run(
+        lifecycle_provider.finalize(
+            owner=owner,
+            repo=repo,
+            pull_number=pr_number,
+            comparison=comparison,
+        )
+    )
+    return comparison
+
+
 def main() -> None:
     token = os.getenv("GITHUB_TOKEN")
     if not token:
@@ -107,6 +174,7 @@ def main() -> None:
     print("[CONTEXT] Pull Request:")
     print(f"#{pr_context['pr_number']}")
     github_provider = GitHubMCPProvider(token=token)
+    lifecycle_provider = GitHubMCPFindingLifecycle(github_provider)
     files_payload = asyncio.run(
         github_provider.get_pull_request_files(
             owner=repo_owner,
@@ -129,17 +197,19 @@ def main() -> None:
     if not files_payload:
         print("[AI] Generative Engine call skipped")
         print("[REVIEW] Preparing no-change advisory")
-        asyncio.run(
-            github_provider.post_review(
-                owner=repo_owner,
-                repo=repo_name,
-                pull_number=pr_context["pr_number"],
-                review_payload={
-                    "body": build_no_change_advisory(),
-                    "commit_id": pr_context["head_sha"],
-                    "comments": [],
-                },
-            ),
+        post_review_with_lifecycle(
+            github_provider,
+            lifecycle_provider,
+            repo_owner,
+            repo_name,
+            pr_context["pr_number"],
+            pr_context["head_sha"],
+            {
+                "body": build_no_change_advisory(),
+                "commit_id": pr_context["head_sha"],
+                "comments": [],
+            },
+            resolve_unreviewed=True,
         )
         print("AI PR REVIEW POSTED SUCCESSFULLY")
         return
@@ -155,13 +225,14 @@ def main() -> None:
                 "commit_id": pr_context["head_sha"],
                 "comments": [],
             }
-            asyncio.run(
-                github_provider.post_review(
-                    owner=repo_owner,
-                    repo=repo_name,
-                    pull_number=pr_context["pr_number"],
-                    review_payload=advisory_payload,
-                ),
+            post_review_with_lifecycle(
+                github_provider,
+                lifecycle_provider,
+                repo_owner,
+                repo_name,
+                pr_context["pr_number"],
+                pr_context["head_sha"],
+                advisory_payload,
             )
             print("AI PR REVIEW POSTED SUCCESSFULLY")
             return
@@ -205,13 +276,20 @@ def main() -> None:
         pr_context["head_sha"],
     )
     print("[FORMAT] Enterprise summary generated")
-    asyncio.run(
-        github_provider.post_review(
-            owner=repo_owner,
-            repo=repo_name,
-            pull_number=pr_context["pr_number"],
-            review_payload=review_payload,
-        ),
+    complete_diff = "[truncated]" not in filtered["diff_text"]
+    complete_file_selection = len(filtered["files_reviewed"]) + len(filtered["files_skipped"]) == len(files_payload)
+    lifecycle_reviewed_files = filtered["files_reviewed"] if complete_diff and complete_file_selection else []
+    post_review_with_lifecycle(
+        github_provider,
+        lifecycle_provider,
+        repo_owner,
+        repo_name,
+        pr_context["pr_number"],
+        pr_context["head_sha"],
+        review_payload,
+        review_result=review_result,
+        changed_line_map=filtered["changed_line_map"],
+        reviewed_files=lifecycle_reviewed_files,
     )
 
     print("AI PR REVIEW POSTED SUCCESSFULLY")

@@ -1,6 +1,30 @@
 import asyncio
 
 import reviewer.main as reviewer_main
+from reviewer.models import ReviewResult
+from reviewer.review import build_github_review_payload
+
+
+def install_fake_lifecycle(monkeypatch):
+    class FakeLifecycle:
+        def __init__(self, provider):
+            pass
+
+        async def reconcile(self, **kwargs):
+            return {
+                "records": [],
+                "new_findings": [],
+                "existing_findings": [],
+                "resolved_findings": [],
+                "reopened_findings": [],
+                "thread_ids_before": set(),
+                "state_comment_id": None,
+            }
+
+        async def finalize(self, **kwargs):
+            return kwargs["comparison"]
+
+    monkeypatch.setattr(reviewer_main, "GitHubMCPFindingLifecycle", FakeLifecycle)
 
 
 def test_metadata_only_pull_request_posts_advisory_without_calling_gep(monkeypatch):
@@ -42,6 +66,7 @@ def test_metadata_only_pull_request_posts_advisory_without_calling_gep(monkeypat
         }
     })
     monkeypatch.setattr(reviewer_main, "GitHubMCPProvider", FakeProvider)
+    install_fake_lifecycle(monkeypatch)
     monkeypatch.setattr(
         reviewer_main,
         "call_capgemini",
@@ -88,6 +113,7 @@ def test_zero_changed_files_posts_no_change_advisory_without_gep(monkeypatch, ca
         }
     })
     monkeypatch.setattr(reviewer_main, "GitHubMCPProvider", FakeProvider)
+    install_fake_lifecycle(monkeypatch)
     monkeypatch.setattr(
         reviewer_main,
         "call_capgemini",
@@ -110,3 +136,92 @@ def test_zero_changed_files_posts_no_change_advisory_without_gep(monkeypatch, ca
     output = capsys.readouterr().out
     assert "[AI] Generative Engine call skipped" in output
     assert "[REVIEW] Preparing no-change advisory" in output
+
+
+def test_lifecycle_publishes_inline_comment_only_for_new_finding():
+    posted = []
+    finalized = []
+
+    class FakeProvider:
+        async def post_review(self, owner, repo, pull_number, review_payload):
+            posted.append(review_payload)
+
+    class FakeLifecycle:
+        async def reconcile(self, **kwargs):
+            records = kwargs["current_findings"]
+            return {
+                "records": records,
+                "new_findings": [records[1]],
+                "existing_findings": [records[0]],
+                "resolved_findings": [],
+                "reopened_findings": [],
+                "thread_ids_before": {"old-thread"},
+                "state_comment_id": 99,
+            }
+
+        async def finalize(self, **kwargs):
+            finalized.append(kwargs["comparison"])
+            return kwargs["comparison"]
+
+    result = ReviewResult.model_validate({
+        "decision": "ADVISORY",
+        "risk_level": "HIGH",
+        "findings": [
+            {
+                "severity": "HIGH",
+                "category": "Security",
+                "file": "src/app.py",
+                "line": 8,
+                "title": "Existing validation",
+                "issue": "Input is unchecked.",
+                "recommendation": "Validate input.",
+            },
+            {
+                "severity": "MEDIUM",
+                "category": "Reliability",
+                "file": "src/app.py",
+                "line": 9,
+                "title": "New pagination issue",
+                "issue": "The result is not paginated.",
+                "recommendation": "Add pagination.",
+            },
+            {
+                "severity": "MEDIUM",
+                "category": "Reliability",
+                "file": "src/app.py",
+                "line": 9,
+                "title": "New pagination issue",
+                "issue": "The result is not paginated.",
+                "recommendation": "Add pagination.",
+            },
+        ],
+        "summary": "Two findings.",
+        "files_reviewed": ["src/app.py"],
+        "files_skipped": [],
+        "categories_reviewed": ["Security", "Reliability"],
+    })
+    line_map = {"src/app.py": [
+        {"line": 8, "content": "if not owner_id: raise ValueError()"},
+        {"line": 9, "content": "return items"},
+    ]}
+    payload = build_github_review_payload(result, line_map, "head-sha")
+
+    reviewer_main.post_review_with_lifecycle(
+        FakeProvider(),
+        FakeLifecycle(),
+        "octo",
+        "demo",
+        12,
+        "head-sha",
+        payload,
+        review_result=result,
+        changed_line_map=line_map,
+        reviewed_files=["src/app.py"],
+    )
+
+    assert len(posted) == 1
+    assert len(posted[0]["comments"]) == 1
+    assert "New pagination issue" in posted[0]["comments"][0]["body"]
+    assert "Existing validation" not in posted[0]["comments"][0]["body"]
+    assert "## Finding Lifecycle" in posted[0]["body"]
+    assert len(finalized) == 1

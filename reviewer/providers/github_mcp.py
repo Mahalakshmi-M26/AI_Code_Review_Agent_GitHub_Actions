@@ -15,7 +15,7 @@ class GitHubMCPProvider:
     """Connectivity, discovery, and Pull Request reads via the official GitHub MCP server."""
 
     DEFAULT_IMAGE = "ghcr.io/github/github-mcp-server"
-    DEFAULT_TOOLSETS = ("repos", "pull_requests")
+    DEFAULT_TOOLSETS = ("repos", "pull_requests", "issues")
     FILES_PAGE_SIZE = 100
 
     def __init__(

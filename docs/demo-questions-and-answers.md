@@ -1,6 +1,6 @@
 # AI Code Review Agent: Demo Questions and Answers
 
-A mentor/evaluator preparation guide for the live P1/P2 demonstration. P1 and P2 are complete; P3 is roadmap only. This is an enterprise-oriented POC, not a production-certified system. Human approval remains required.
+A mentor/evaluator preparation guide for the live demonstration. P1, P2, and P3 finding lifecycle management are implemented. This is an enterprise-oriented POC, not a production-certified system. Human approval remains required.
 
 ## A. Business and Purpose
 
@@ -212,7 +212,10 @@ A successful empty `get_files` response returns zero files; `get_diff` and GEP a
 There is no code evidence for model analysis. Skipping avoids an unnecessary request and prevents fabricated findings.
 
 **What happens when a developer fixes an issue and pushes again?**
-The push triggers synchronize and the current revision is reviewed. A fix no longer present in the diff is not re-reported by that run; older thread resolution is not automatic.
+The push triggers synchronize. The reviewer compares stable finding identities, resolves tracked threads for fixed findings when review coverage is complete, and publishes inline comments only for new findings.
+
+**Where is lifecycle state stored?**
+In a hidden HTML-comment block in a PR conversation comment, read and updated through GitHub MCP issue-comment tools. It records finding IDs, thread IDs, current head SHA, and open/resolved status. Artifacts require cross-run retrieval and retention management; a JSON file would pollute the PR branch.
 
 **What does the synchronize event mean?**
 It means the PR branch has received new commits and causes the review workflow to run again.
@@ -250,7 +253,7 @@ It is a workflow-provided token scoped to the job/run, not a long-lived personal
 To limit the consequences of token misuse or workflow compromise.
 
 **Which permissions are required?**
-The checked-in reusable workflow grants `contents: read` and `pull-requests: write`.
+The checked-in reusable workflow grants `contents: read`, `pull-requests: write`, and `issues: write` for hidden lifecycle state persistence.
 
 **Are PR contents trusted?**
 No. Titles, descriptions, filenames, comments, and code are treated as untrusted input.
@@ -320,25 +323,25 @@ P2 completed enterprise summary generation, deterministic added-line validation,
 Summary-only findings, validated RIGHT-side inline comments, pending MCP review create, comment addition, COMMENT submission, and human-in-the-loop behavior are complete.
 
 **What is P3?**
-P3 is the roadmap for stable finding identity, duplicate suppression, cross-commit comparisons, resolved-finding detection, and review-thread lifecycle management.
+P3 tracks stable finding identity across synchronize events, suppresses duplicate inline comments, and resolves or reopens associated review threads through GitHub MCP.
 
 **Why is duplicate handling P3?**
 It requires stable finding identity, persistence, and careful comparison across evolving diffs; it is separate from safe first-pass review publication.
 
 **Is duplicate suppression implemented?**
-No. Repeated findings may appear on later runs.
+Yes. Existing findings retain their thread mapping and are excluded from inline comment publication on later runs.
 
 **Are old review threads automatically resolved?**
-No. A fixed issue is not re-raised if absent from the current diff, but the old GitHub thread is not automatically resolved.
+Yes, when their file was covered by a complete, non-truncated review. Findings outside reliable coverage remain open.
 
-**How could automatic resolution work through GitHub MCP?**
-A future implementation could persist finding/thread identity, compare current and prior findings, and use supported GitHub MCP thread-resolution tools only after safe matching and explicit policy.
+**Which MCP methods manage thread state?**
+`pull_request_read(method="get_review_comments")` retrieves thread IDs and resolution state. `pull_request_review_write(method="resolve_thread")` resolves fixed findings; `unresolve_thread` reopens returning findings.
 
 **What would stable finding identity mean?**
 A reproducible fingerprint derived from normalized file, issue/category, and relevant code evidence, designed to remain stable across harmless line shifts while distinguishing different findings.
 
-**How would findings be compared across commits?**
-Persist prior findings and revision identifiers, calculate new fingerprints, compare with the current result, and classify continuing, changed, fixed, and new findings. That lifecycle is not implemented.
+**How are findings compared across commits?**
+The agent persists finding fingerprints and thread IDs in a hidden PR comment, then classifies each synchronize result as new, existing, resolved, or reopened.
 
 ## K. Production Roadmap
 
@@ -400,6 +403,6 @@ Use a governed store keyed by repository, PR, and stable finding fingerprint, wi
 
 **13. Does AI merge or approve code?** No. It posts an advisory COMMENT review; human approval remains required.
 
-**14. What remains in P3?** Finding identity, duplicate suppression, cross-commit comparison, fixed-finding detection, and review-thread lifecycle.
+**14. What remains outside P1/P2/P3?** Existing review-comment body editing is not supported by GitHub MCP; the agent resolves/reopens threads instead. Partial or truncated review coverage leaves prior threads open.
 
 **15. What is needed before production?** Security and operations hardening: auth review, retries/rate limits, immutable workflow pinning, audit/metrics, cost controls, and lifecycle-state design.
