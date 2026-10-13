@@ -168,6 +168,9 @@ def post_review_with_lifecycle(
 
 def main() -> None:
     token = os.getenv("GITHUB_TOKEN")
+    print("[AUTH DEBUG]")
+    print(f"token_length={len(token) if token else 0}")
+    print(f"using_pat={len(token) > 100}")
     if not token:
         raise RuntimeError("Missing GITHUB_TOKEN. Ensure the workflow exposes the GitHub token to the runner.")
 
