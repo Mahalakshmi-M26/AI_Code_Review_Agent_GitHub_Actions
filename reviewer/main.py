@@ -119,11 +119,22 @@ def post_review_with_lifecycle(
     reviewed_files: list[str] | None = None,
     resolve_unreviewed: bool = False,
 ) -> dict:
+    if review_result is not None:
+        print(f"[FINDINGS] stage=before_lifecycle_identity count={len(review_result.findings)}")
+        for finding in review_result.findings:
+            print(
+                f"[FINDINGS] stage=before_lifecycle_identity title={finding.title!r} "
+                f"category={finding.category!r} line={finding.line!r}"
+            )
     lifecycle_findings = build_finding_records(
         review_result,
         changed_line_map or {},
         os.getenv("TARGET_REPO_PATH"),
     ) if review_result is not None else []
+    print(
+        f"[FINDINGS] stage=after_lifecycle_identity count={len(lifecycle_findings)} "
+        f"unique_ids={len({record['finding_id'] for record in lifecycle_findings})}"
+    )
     comparison = asyncio.run(
         lifecycle_provider.reconcile(
             owner=owner,
@@ -147,6 +158,21 @@ def post_review_with_lifecycle(
                 new_findings.append(finding)
                 comment_finding_ids.append(finding_id)
                 seen_new_ids.add(finding_id)
+            else:
+                reason = (
+                    "duplicate finding_id already selected for inline publication"
+                    if finding_id in seen_new_ids
+                    else "finding is existing/reopened, not new; inline duplicate suppressed"
+                )
+                print(
+                    f"[FINDINGS] inline_publication_suppressed title={finding.title!r} "
+                    f"category={finding.category!r} reason={reason}"
+                )
+        print(
+            f"[FINDINGS] stage=after_lifecycle_inline_filter "
+            f"summary_findings={len(review_result.findings)} "
+            f"new_inline_candidates={len(new_findings)}"
+        )
         new_result = review_result.model_copy(update={"findings": new_findings})
         review_payload["comments"] = build_inline_review_comments(
             new_result,
@@ -237,6 +263,25 @@ def main() -> None:
         max_file_diff_chars=int(os.getenv("MAX_FILE_DIFF_CHARS", str(MAX_FILE_DIFF_CHARS))),
         max_review_input_chars=int(os.getenv("MAX_REVIEW_INPUT_CHARS", str(MAX_REVIEW_INPUT_CHARS))),
     )
+    max_files = int(os.getenv("MAX_FILES", str(MAX_FILES)))
+    max_file_diff_chars = int(os.getenv("MAX_FILE_DIFF_CHARS", str(MAX_FILE_DIFF_CHARS)))
+    max_review_input_chars = int(os.getenv("MAX_REVIEW_INPUT_CHARS", str(MAX_REVIEW_INPUT_CHARS)))
+    accounted_files = len(filtered["files_reviewed"]) + len(filtered["files_skipped"])
+    not_considered_count = max(0, len(files_payload) - accounted_files)
+    print(
+        f"[DIFF] source_files={len(files_payload)} selected={len(filtered['files_reviewed'])} "
+        f"explicitly_skipped={len(filtered['files_skipped'])} "
+        f"not_considered={not_considered_count} max_files={max_files} "
+        f"max_file_diff_chars={max_file_diff_chars} "
+        f"max_review_input_chars={max_review_input_chars} "
+        f"bounded_diff_chars={len(filtered['diff_text'])} "
+        f"truncated={'[truncated]' in filtered['diff_text']}"
+    )
+    if not_considered_count:
+        print(
+            f"[DIFF] {not_considered_count} source file(s) were not considered "
+            "because the selected-file limit was reached"
+        )
     print("[FILTER] Reviewable files:")
     print(len(filtered["files_reviewed"]))
     print("[DIFF] Bounded diff generated")
@@ -321,6 +366,22 @@ def main() -> None:
         timeout_seconds=timeout_seconds,
     )
     print("[AI] Structured response received")
+    raw_findings = raw_response.get("findings") if isinstance(raw_response, dict) else None
+    raw_finding_count = len(raw_findings) if isinstance(raw_findings, list) else 0
+    print(f"[FINDINGS] stage=ai_response_extracted count={raw_finding_count}")
+    if isinstance(raw_findings, list):
+        for index, finding in enumerate(raw_findings):
+            if isinstance(finding, dict):
+                print(
+                    f"[FINDINGS] stage=ai_response_extracted index={index} "
+                    f"title={finding.get('title')!r} category={finding.get('category')!r}"
+                )
+            else:
+                print(
+                    f"[FINDINGS] stage=ai_response_extracted index={index} "
+                    f"title='<unavailable>' category='<unavailable>' "
+                    f"reason=expected object, got {type(finding).__name__}"
+                )
 
     validated_result = validate_result(raw_response)
     print("[PYDANTIC] Response validated")

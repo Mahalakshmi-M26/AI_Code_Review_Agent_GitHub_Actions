@@ -8,7 +8,7 @@ from typing import Any
 import httpx
 
 from .diff_parser import build_changed_line_map_from_prompt_diff
-from .models import ReviewResult
+from .models import ReviewFinding, ReviewResult
 
 MAX_FILES = 40
 MAX_FILE_DIFF_CHARS = 12000
@@ -245,17 +245,63 @@ def validate_finding_lines(
         file_name: {item["line"] for item in entries}
         for file_name, entries in changed_line_map.items()
     }
+    _log_finding_stage("before_location_validation", result.findings)
     findings = [
-        finding.model_copy(update={
-            "line": finding.line
-            if finding.line is not None
-            and finding.file in valid_lines
-            and finding.line in valid_lines[finding.file]
-            else None
-        })
+        _validate_finding_location(finding, valid_lines)
         for finding in result.findings
     ]
-    return result.model_copy(update={"findings": findings})
+    validated = result.model_copy(update={"findings": findings})
+    _log_finding_stage("after_location_validation", validated.findings)
+    print(
+        f"[FINDINGS] stage=location_validation total_before={len(result.findings)} "
+        f"total_after={len(validated.findings)} discarded=0 "
+        "invalid locations become summary-only (line=null), not dropped findings"
+    )
+    return validated
+
+
+def _validate_finding_location(
+    finding: ReviewFinding,
+    valid_lines: dict[str, set[int | str]],
+) -> ReviewFinding:
+    if finding.line is None:
+        print(
+            f"[FINDINGS] inline_location_excluded title={finding.title!r} "
+            f"category={finding.category!r} reason=model returned line=null; finding remains in summary"
+        )
+        return finding
+    if finding.file not in valid_lines:
+        reason = "file is absent from deterministic changed-line map"
+    elif finding.line not in valid_lines[finding.file]:
+        reason = "line is not an added line in deterministic changed-line map"
+    else:
+        return finding
+    print(
+        f"[FINDINGS] inline_location_excluded title={finding.title!r} "
+        f"category={finding.category!r} reason={reason}; finding remains in summary"
+    )
+    return finding.model_copy(update={"line": None})
+
+
+def _finding_details(finding: Any) -> tuple[str, str]:
+    if isinstance(finding, dict):
+        title = finding.get("title")
+        category = finding.get("category")
+    else:
+        title = getattr(finding, "title", None)
+        category = getattr(finding, "category", None)
+    return str(title or "<missing title>"), str(category or "<missing category>")
+
+
+def _log_finding_stage(stage: str, findings: Any) -> None:
+    if not isinstance(findings, list):
+        print(f"[FINDINGS] stage={stage} unavailable_type={type(findings).__name__}")
+        return
+    print(f"[FINDINGS] stage={stage} count={len(findings)}")
+    for index, finding in enumerate(findings):
+        title, category = _finding_details(finding)
+        line = finding.get("line") if isinstance(finding, dict) else getattr(finding, "line", None)
+        print(f"[FINDINGS] stage={stage} index={index} title={title!r} category={category!r} line={line!r}")
 
 
 def finding_id_marker(finding_id: str) -> str:
@@ -291,6 +337,17 @@ def build_inline_review_comments(
             or finding.file not in valid_lines
             or finding.line not in valid_lines[finding.file]
         ):
+            if finding.line is not None:
+                if finding.file not in valid_lines:
+                    reason = "file is absent from deterministic changed-line map"
+                else:
+                    reason = "line is not an added line in deterministic changed-line map"
+            else:
+                reason = "finding has no validated inline location"
+            print(
+                f"[FINDINGS] inline_comment_discarded title={finding.title!r} "
+                f"category={finding.category!r} reason={reason}; summary finding is retained"
+            )
             continue
 
         severity = finding.severity.value
@@ -422,10 +479,42 @@ def call_capgemini(
 
 
 def validate_result(payload: dict[str, Any]) -> ReviewResult:
+    raw_findings = payload.get("findings") if isinstance(payload, dict) else None
+    _log_finding_stage("before_schema_validation", raw_findings)
+    if isinstance(raw_findings, list):
+        for index, raw_finding in enumerate(raw_findings):
+            try:
+                ReviewFinding.model_validate(raw_finding)
+            except Exception as exc:
+                title, category = _finding_details(raw_finding)
+                validation_errors = getattr(exc, "errors", None)
+                if callable(validation_errors):
+                    details = "; ".join(
+                        f"{'.'.join(str(part) for part in error.get('loc', ()))}: {error.get('msg', 'invalid')}"
+                        for error in validation_errors(include_input=False)
+                    )
+                else:
+                    details = type(exc).__name__
+                print(
+                    f"[FINDINGS] validation_rejected title={title!r} category={category!r} "
+                    f"reason=item {index} failed ReviewFinding validation: {details}"
+                )
     try:
-        return ReviewResult.model_validate(payload)
+        result = ReviewResult.model_validate(payload)
     except Exception as exc:  # pragma: no cover - re-raised for clear error reporting
+        print(
+            f"[FINDINGS] schema_validation_failed raw_finding_count="
+            f"{len(raw_findings) if isinstance(raw_findings, list) else 'unavailable'} "
+            f"reason={type(exc).__name__}"
+        )
         raise ValueError(f"Pydantic validation failed: {exc}") from exc
+    _log_finding_stage("after_schema_validation", result.findings)
+    print(
+        f"[FINDINGS] stage=schema_validation total_before="
+        f"{len(raw_findings) if isinstance(raw_findings, list) else 'unavailable'} "
+        f"total_after={len(result.findings)} discarded=0"
+    )
+    return result
 
 
 def format_review_markdown(result: ReviewResult) -> str:

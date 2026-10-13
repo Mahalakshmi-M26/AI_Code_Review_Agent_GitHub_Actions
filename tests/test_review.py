@@ -67,6 +67,97 @@ def test_format_review_markdown_contains_expected_sections():
     assert "Line 79" in markdown
 
 
+def test_validate_result_logs_counts_before_and_after_schema_validation(capsys):
+    payload = {
+        "decision": "ADVISORY",
+        "risk_level": "HIGH",
+        "findings": [{
+            "severity": "HIGH",
+            "category": "Security",
+            "file": "src/app.py",
+            "line": 4,
+            "title": "Missing validation",
+            "issue": "The input is unchecked.",
+            "recommendation": "Validate the input.",
+        }],
+        "summary": "One finding.",
+        "files_reviewed": ["src/app.py"],
+        "files_skipped": [],
+        "categories_reviewed": ["Security"],
+    }
+
+    result = review.validate_result(payload)
+
+    assert len(result.findings) == 1
+    output = capsys.readouterr().out
+    assert "stage=before_schema_validation count=1" in output
+    assert "stage=after_schema_validation count=1" in output
+    assert "total_before=1 total_after=1 discarded=0" in output
+    assert "title='Missing validation' category='Security'" in output
+
+
+def test_validate_result_logs_invalid_finding_reason(capsys):
+    payload = {
+        "decision": "ADVISORY",
+        "risk_level": "HIGH",
+        "findings": [{
+            "severity": "UNKNOWN",
+            "category": "Security",
+            "file": "src/app.py",
+            "line": 4,
+            "title": "Bad severity finding",
+            "issue": "The input is unchecked.",
+            "recommendation": "Validate the input.",
+        }],
+        "summary": "One finding.",
+        "files_reviewed": ["src/app.py"],
+        "files_skipped": [],
+        "categories_reviewed": ["Security"],
+    }
+
+    with pytest.raises(ValueError, match="Pydantic validation failed"):
+        review.validate_result(payload)
+
+    output = capsys.readouterr().out
+    assert "validation_rejected title='Bad severity finding' category='Security'" in output
+    assert "reason=item 0 failed ReviewFinding validation" in output
+    assert "schema_validation_failed raw_finding_count=1" in output
+
+
+def test_location_filter_logs_inline_discard_and_keeps_finding(capsys):
+    result = ReviewResult.model_validate({
+        "decision": "ADVISORY",
+        "risk_level": "HIGH",
+        "findings": [{
+            "severity": "HIGH",
+            "category": "Security",
+            "file": "src/app.py",
+            "line": 99,
+            "title": "Missing validation",
+            "issue": "The input is unchecked.",
+            "recommendation": "Validate the input.",
+        }],
+        "summary": "One finding.",
+        "files_reviewed": ["src/app.py"],
+        "files_skipped": [],
+        "categories_reviewed": ["Security"],
+    })
+
+    located = review.validate_finding_lines(result, {"src/app.py": [{"line": 4, "content": "changed"}]})
+    comments = review.build_inline_review_comments(located, {"src/app.py": [{"line": 4, "content": "changed"}]})
+
+    assert len(located.findings) == 1
+    assert located.findings[0].line is None
+    assert comments == []
+    output = capsys.readouterr().out
+    assert "stage=before_location_validation count=1" in output
+    assert "stage=after_location_validation count=1" in output
+    assert "total_before=1 total_after=1 discarded=0" in output
+    assert "inline_location_excluded title='Missing validation' category='Security'" in output
+    assert "inline_comment_discarded title='Missing validation'" in output
+    assert "reason=line is not an added line in deterministic changed-line map" in output
+
+
 def test_call_capgemini_rejects_malformed_json(monkeypatch):
     class FakeResponse:
         status_code = 200

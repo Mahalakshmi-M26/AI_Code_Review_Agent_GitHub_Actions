@@ -145,7 +145,84 @@ def test_zero_changed_files_posts_no_change_advisory_without_gep(monkeypatch, ca
     assert "[REVIEW] Preparing no-change advisory" in output
 
 
-def test_lifecycle_publishes_inline_comment_only_for_new_finding():
+def test_main_logs_findings_through_ai_validation_and_lifecycle_stages(monkeypatch, capsys):
+    posted = []
+
+    class FakeProvider:
+        def __init__(self, token):
+            assert token == "test-token"
+
+        async def get_pull_request_files(self, owner, repo, pull_number):
+            return [{
+                "filename": "src/app.py",
+                "patch": "@@ -1 +1,2 @@\n old = True\n+new = True\n",
+            }]
+
+        async def post_review(self, owner, repo, pull_number, review_payload):
+            posted.append(review_payload)
+
+    raw_result = {
+        "decision": "ADVISORY",
+        "risk_level": "HIGH",
+        "findings": [
+            {
+                "severity": "HIGH",
+                "category": "Security",
+                "file": "src/app.py",
+                "line": 2,
+                "title": "Missing authorization check",
+                "issue": "The action is not authorized.",
+                "recommendation": "Check authorization.",
+            },
+            {
+                "severity": "MEDIUM",
+                "category": "Reliability",
+                "file": "src/app.py",
+                "line": 2,
+                "title": "Missing failure handling",
+                "issue": "The failure is not handled.",
+                "recommendation": "Handle the failure.",
+            },
+        ],
+        "summary": "Two issues.",
+        "files_reviewed": ["src/app.py"],
+        "files_skipped": [],
+        "categories_reviewed": ["Security", "Reliability"],
+    }
+
+    monkeypatch.setenv("GITHUB_TOKEN", "test-token")
+    monkeypatch.setenv("GITHUB_REPOSITORY", "octo/demo")
+    monkeypatch.setenv("PR_NUMBER", "12")
+    monkeypatch.setenv("GEP_API_KEY", "test-key")
+    monkeypatch.setattr(reviewer_main, "load_event", lambda: {
+        "pull_request": {
+            "number": 12,
+            "title": "Review these changes",
+            "head": {"sha": "head-sha"},
+            "base": {"sha": "base-sha"},
+        }
+    })
+    monkeypatch.setattr(reviewer_main, "GitHubMCPProvider", FakeProvider)
+    install_fake_lifecycle(monkeypatch)
+    monkeypatch.setattr(reviewer_main, "load_policy", lambda: "policy")
+    monkeypatch.setattr(reviewer_main, "call_capgemini", lambda **kwargs: raw_result)
+
+    reviewer_main.main()
+
+    output = capsys.readouterr().out
+    assert "stage=ai_response_extracted count=2" in output
+    assert "stage=before_schema_validation count=2" in output
+    assert "stage=after_schema_validation count=2" in output
+    assert "stage=before_location_validation count=2" in output
+    assert "stage=after_location_validation count=2" in output
+    assert "total_before=2 total_after=2 discarded=0" in output
+    assert "stage=before_lifecycle_identity count=2" in output
+    assert "stage=after_lifecycle_identity count=2 unique_ids=2" in output
+    assert "Missing authorization check" in posted[0]["body"]
+    assert "Missing failure handling" in posted[0]["body"]
+
+
+def test_lifecycle_publishes_inline_comment_only_for_new_finding(capsys):
     posted = []
     finalized = []
 
@@ -232,4 +309,9 @@ def test_lifecycle_publishes_inline_comment_only_for_new_finding():
     assert "Existing validation" not in posted[0]["comments"][0]["body"]
     assert f"<!-- ai-review-finding-id:{finalized[0]['new_findings'][0]['finding_id']} -->" in posted[0]["comments"][0]["body"]
     assert "## Finding Lifecycle" in posted[0]["body"]
+    assert "Existing validation" in posted[0]["body"]
     assert len(finalized) == 1
+    output = capsys.readouterr().out
+    assert "inline_publication_suppressed title='Existing validation' category='Security'" in output
+    assert "reason=finding is existing/reopened, not new; inline duplicate suppressed" in output
+    assert "stage=after_lifecycle_inline_filter summary_findings=3 new_inline_candidates=1" in output

@@ -366,6 +366,28 @@ def test_comparison_classifies_new_existing_and_resolved_findings():
     assert records_by_id["B"]["thread_id"] == "thread-B"
 
 
+def test_comparison_logs_duplicate_identity_discard(capsys):
+    duplicate_records = [
+        {**record("SAME", "First title"), "repository": "octo/demo", "pr_number": 12, "category": "Security"},
+        {**record("SAME", "Duplicate title"), "repository": "octo/demo", "pr_number": 12, "category": "Security"},
+    ]
+
+    compared = compare_findings(
+        [],
+        duplicate_records,
+        repository="octo/demo",
+        pr_number=12,
+        head_sha="head",
+        reviewed_files=["src/app.py"],
+    )
+
+    assert len(compared["new_findings"]) == 1
+    output = capsys.readouterr().out
+    assert "stage=after_identity_dedup count=1 discarded=1" in output
+    assert "dedup_discarded title='Duplicate title' category='Security'" in output
+    assert "reason=duplicate finding_id SAME; last occurrence retained" in output
+
+
 def test_unreviewed_file_does_not_resolve_finding():
     compared = compare_findings(
         [record("A", "A")],

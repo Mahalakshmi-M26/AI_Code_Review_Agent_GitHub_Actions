@@ -176,11 +176,29 @@ def compare_findings(
         and record.get("pr_number") == pr_number
         and record.get("finding_id")
     }
-    current_by_id = {
-        str(record["finding_id"]): record
-        for record in current_findings
-        if record.get("finding_id")
-    }
+    current_by_id: dict[str, dict[str, Any]] = {}
+    for record in current_findings:
+        finding_id = record.get("finding_id")
+        if not finding_id:
+            title = record.get("title", "<missing title>")
+            category = record.get("category", "<missing category>")
+            print(
+                f"[FINDINGS] dedup_discarded title={title!r} category={category!r} "
+                "reason=missing finding_id"
+            )
+            continue
+        key = str(finding_id)
+        if key in current_by_id:
+            print(
+                f"[FINDINGS] dedup_discarded title={record.get('title')!r} "
+                f"category={record.get('category')!r} "
+                f"reason=duplicate finding_id {key}; last occurrence retained"
+            )
+        current_by_id[key] = record
+    print(
+        f"[FINDINGS] stage=after_identity_dedup count={len(current_by_id)} "
+        f"discarded={len(current_findings) - len(current_by_id)}"
+    )
     reviewed = {normalize_file_path(path) for path in reviewed_files}
     records: dict[str, dict[str, Any]] = {}
     new_findings: list[dict[str, Any]] = []
