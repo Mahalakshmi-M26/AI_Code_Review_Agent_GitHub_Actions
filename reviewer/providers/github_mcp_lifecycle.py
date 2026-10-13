@@ -26,7 +26,7 @@ class GitHubMCPFindingLifecycle:
 
     PAGE_SIZE = 100
     STATE_AUTHOR = "github-actions[bot]"
-    REVIEW_COMMENT_AUTHORS = {"github-actions", STATE_AUTHOR}
+    REVIEW_COMMENT_AUTHORS = {"github-actions", STATE_AUTHOR, "Mahalakshmi-M26"}
 
     def __init__(self, provider: GitHubMCPProvider) -> None:
         self.provider = provider

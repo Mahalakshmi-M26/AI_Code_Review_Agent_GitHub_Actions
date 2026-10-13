@@ -508,6 +508,74 @@ def test_reconcile_backfills_legacy_thread_before_resolving(monkeypatch, capsys)
     assert f"[P3] MCP resolve_thread {thread_id}" in output
 
 
+def test_reconcile_matches_findings_from_actions_and_pat_user_authors(monkeypatch):
+    calls = []
+    previous = [
+        {**record("A", "A"), "thread_id": None},
+        {**record("B", "B"), "thread_id": None},
+    ]
+    comments = [state_comment(91, previous)]
+    threads = [
+        {
+            **review_thread("thread-A", "Finding A\n\n<!-- ai-review-finding-id:A -->"),
+            "comments": [{
+                "body": "Finding A\n\n<!-- ai-review-finding-id:A -->",
+                "path": "src/app.py",
+                "author": "github-actions",
+            }],
+        },
+        {
+            **review_thread("thread-B", "Finding B\n\n<!-- ai-review-finding-id:B -->"),
+            "comments": [{
+                "body": "Finding B\n\n<!-- ai-review-finding-id:B -->",
+                "path": "src/app.py",
+                "author": "Mahalakshmi-M26",
+            }],
+        },
+    ]
+
+    def responder(name, arguments):
+        if arguments.get("method") == "get_comments":
+            return mcp_payload(comments)
+        if arguments.get("method") == "get_review_comments":
+            return mcp_payload({"review_threads": threads, "pageInfo": {"hasNextPage": False}})
+        return mcp_json_text({"message": "ok"})
+
+    install_fake_lifecycle_mcp(monkeypatch, responder, calls)
+    compared = asyncio.run(GitHubMCPFindingLifecycle(GitHubMCPProvider(token="test-token")).reconcile(
+        "octo", "demo", 12, "new-head", [record("B", "B")], ["src/app.py"],
+    ))
+
+    assert [item["finding_id"] for item in compared["existing_findings"]] == ["B"]
+    assert [item["finding_id"] for item in compared["resolved_findings"]] == ["A"]
+    assert [item["finding_id"] for item in compared["new_findings"]] == []
+    assert {item["finding_id"]: item["thread_id"] for item in compared["records"]} == {
+        "A": "thread-A",
+        "B": "thread-B",
+    }
+
+
+@pytest.mark.parametrize(
+    ("author", "body", "path", "expected"),
+    [
+        ("Mahalakshmi-M26", "marker: <!-- ai-review-finding-id:A -->", "src/app.py", True),
+        ("Mahalakshmi-M26", "marker: <!-- ai-review-finding-id:other -->", "src/app.py", False),
+        ("Mahalakshmi-M26", "marker: <!-- ai-review-finding-id:A -->", "src/other.py", False),
+        ("untrusted-user", "marker: <!-- ai-review-finding-id:A -->", "src/app.py", False),
+    ],
+)
+def test_comment_matching_keeps_marker_path_and_author_checks(author, body, path, expected):
+    thread = {
+        "id": "thread-A",
+        "comments": [{"body": body, "path": path, "author": author}],
+    }
+
+    assert GitHubMCPFindingLifecycle._comment_matches(
+        thread,
+        {"finding_id": "A", "file": "src/app.py"},
+    ) is expected
+
+
 def test_reconcile_reopens_returning_resolved_finding(monkeypatch):
     calls = []
     previous = [record("A", "A", status="resolved")]
