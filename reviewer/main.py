@@ -32,6 +32,16 @@ def require_env(name: str) -> str:
     return value
 
 
+def github_token_kind(token: str) -> str:
+    if token.startswith("github_pat_"):
+        return "fine-grained PAT"
+    if token.startswith("ghp_"):
+        return "classic PAT"
+    if token.startswith("ghs_"):
+        return "GitHub App or Actions token"
+    return "unrecognized token format"
+
+
 def load_event() -> dict:
     event_path = os.getenv("GITHUB_EVENT_PATH")
     if not event_path:
@@ -170,7 +180,7 @@ def main() -> None:
     token = os.getenv("GITHUB_TOKEN")
     print("[AUTH DEBUG]")
     print(f"token_length={len(token) if token else 0}")
-    print(f"using_pat={len(token) > 100}")
+    print(f"token_kind={github_token_kind(token) if token else 'missing'}")
     if not token:
         raise RuntimeError("Missing GITHUB_TOKEN. Ensure the workflow exposes the GitHub token to the runner.")
 
@@ -205,6 +215,7 @@ def main() -> None:
     token = os.getenv("GITHUB_TOKEN")
     print(f"token_present={bool(token)}")
     print(f"token_length={len(token) if token else 0}")
+    print(f"token_kind={github_token_kind(token) if token else 'missing'}")
 
     print("[CONTEXT] Repository:")
     print(pr_context["repo_slug"])

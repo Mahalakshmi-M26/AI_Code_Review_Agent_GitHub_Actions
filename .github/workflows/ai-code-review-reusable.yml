@@ -38,7 +38,7 @@ jobs:
       - name: Log GitHub event and token permission context
         env:
           EVENT_NAME: ${{ github.event_name }}
-          TOKEN_SOURCE: github.token
+          TOKEN_SOURCE: secrets.PAT_TOKEN
           DECLARED_TOKEN_PERMISSIONS: "contents: read, pull-requests: write, issues: write"
           BASE_REPOSITORY: ${{ github.repository }}
           HEAD_REPOSITORY: ${{ github.event.pull_request.head.repo.full_name }}

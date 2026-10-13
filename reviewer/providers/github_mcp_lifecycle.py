@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from contextlib import asynccontextmanager
+import json
 import traceback
 from typing import Any, AsyncIterator
 
@@ -12,6 +13,8 @@ from reviewer.finding_lifecycle import (
     decode_lifecycle_state,
     encode_lifecycle_state,
     normalize_file_path,
+    STATE_END_MARKER,
+    STATE_MARKER,
 )
 from reviewer.providers.github_mcp import GitHubMCPProvider
 from reviewer.review import extract_finding_id_marker
@@ -182,6 +185,7 @@ class GitHubMCPFindingLifecycle:
     ) -> list[dict[str, Any]]:
         comments: list[dict[str, Any]] = []
         page = 1
+        print(f"[P3] Reading PR issue comments repository={owner}/{repo} issue_number={pull_number}")
         while True:
             result = await self._call(
                 session,
@@ -200,6 +204,7 @@ class GitHubMCPFindingLifecycle:
                 payload = payload.get("comments", [])
             if not isinstance(payload, list):
                 raise RuntimeError("MCP get_comments response did not contain a comments list.")
+            print(f"[P3] PR issue comment page={page} returned={len(payload)}")
             comments.extend(item for item in payload if isinstance(item, dict))
             if len(payload) < self.PAGE_SIZE:
                 break
@@ -306,19 +311,82 @@ class GitHubMCPFindingLifecycle:
         repository: str,
         pull_number: int,
     ) -> tuple[int | None, list[dict[str, Any]]]:
+        print(
+            f"[P3] Inspecting {len(comments)} PR issue comments for lifecycle state "
+            f"repository={repository} pull_number={pull_number} "
+            f"accepted_authors={sorted(cls.STATE_COMMENT_AUTHORS)!r}"
+        )
+        selected: tuple[int, list[dict[str, Any]]] | None = None
         for comment in reversed(comments):
             user = comment.get("user") or comment.get("author") or {}
             login = user.get("login") if isinstance(user, dict) else None
             body = comment.get("body")
-            if login not in cls.STATE_COMMENT_AUTHORS or not isinstance(body, str):
-                continue
-            records = decode_lifecycle_state(body, repository, pull_number)
-            if records is None:
-                continue
-            try:
-                return int(comment["id"]), records
-            except (KeyError, TypeError, ValueError):
-                raise RuntimeError("The MCP lifecycle state comment did not include a numeric comment ID.")
+            comment_id = comment.get("id")
+            body_preview = body[:100] if isinstance(body, str) else repr(body)[:100]
+            contains_marker = isinstance(body, str) and STATE_MARKER.strip() in body
+            print(
+                f"[P3] State comment candidate id={comment_id!r} author={login!r} "
+                f"body_preview={body_preview!r} contains_lifecycle_marker={contains_marker}"
+            )
+
+            rejection_reason: str | None = None
+            if login not in cls.STATE_COMMENT_AUTHORS:
+                rejection_reason = f"author {login!r} is not in the accepted author list"
+            elif not isinstance(body, str):
+                rejection_reason = "comment body is not a string"
+            elif not body.startswith(STATE_MARKER) or not body.endswith(STATE_END_MARKER):
+                rejection_reason = "lifecycle marker framing is missing or altered"
+
+            payload: Any = None
+            if rejection_reason is None:
+                encoded = body[len(STATE_MARKER):-len(STATE_END_MARKER)]
+                try:
+                    payload = json.loads(encoded)
+                except json.JSONDecodeError:
+                    rejection_reason = "lifecycle marker payload is not valid JSON"
+
+            if rejection_reason is None and not isinstance(payload, dict):
+                rejection_reason = "lifecycle payload is not a JSON object"
+            if rejection_reason is None and payload.get("version") != 1:
+                rejection_reason = f"unsupported lifecycle state version {payload.get('version')!r}"
+            if rejection_reason is None and payload.get("repository") != repository:
+                rejection_reason = (
+                    f"repository mismatch: stored={payload.get('repository')!r} "
+                    f"requested={repository!r}"
+                )
+            if rejection_reason is None and payload.get("pr_number") != pull_number:
+                rejection_reason = (
+                    f"PR number mismatch: stored={payload.get('pr_number')!r} "
+                    f"requested={pull_number!r}"
+                )
+            if rejection_reason is None and not isinstance(payload.get("findings"), list):
+                rejection_reason = "lifecycle payload findings field is not a list"
+            if rejection_reason is None:
+                records = decode_lifecycle_state(body, repository, pull_number)
+                if records is None:
+                    rejection_reason = "lifecycle payload failed state decoding"
+            if rejection_reason is None:
+                try:
+                    numeric_comment_id = int(comment_id)
+                except (TypeError, ValueError):
+                    rejection_reason = "comment ID is missing or non-numeric"
+                else:
+                    if selected is None:
+                        selected = (numeric_comment_id, records)
+                        selection = "selected as newest valid lifecycle state"
+                    else:
+                        selection = "valid lifecycle state, but newer valid state already selected"
+                    print(
+                        f"[P3] State comment id={comment_id!r} ACCEPTED: {selection}; "
+                        f"finding_count={len(records)} "
+                        f"finding_ids={[str(record['finding_id']) for record in records]}"
+                    )
+                    continue
+
+            print(f"[P3] State comment id={comment_id!r} REJECTED: {rejection_reason}")
+
+        if selected is not None:
+            return selected
         return None, []
 
     async def _save_state(

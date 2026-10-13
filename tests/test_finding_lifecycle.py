@@ -405,6 +405,41 @@ def test_state_round_trip_is_scoped_to_repository_and_pull_request():
     assert decode_lifecycle_state(body, "octo/demo", 13) is None
 
 
+def test_find_state_comment_logs_every_candidate_and_accepts_bot_or_pat_author(capsys):
+    records = [record("A", "A")]
+    comments = [
+        state_comment(11, records, author="github-actions[bot]"),
+        state_comment(12, records, author="Mahalakshmi-M26"),
+        state_comment(13, records, author="someone-else"),
+        {
+            **state_comment(14, records, author="github-actions[bot]"),
+            "body": encode_lifecycle_state("octo/demo", 3, records),
+        },
+        {
+            **state_comment(15, records, author="github-actions[bot]"),
+            "body": "<!-- ai-review-finding-lifecycle:broken -->",
+        },
+    ]
+
+    comment_id, loaded = GitHubMCPFindingLifecycle._find_state_comment(
+        comments,
+        "octo/demo",
+        12,
+    )
+
+    assert comment_id == 12
+    assert loaded == records
+    output = capsys.readouterr().out
+    assert "Inspecting 5 PR issue comments" in output
+    assert "id=12" in output and "author='Mahalakshmi-M26'" in output
+    assert "id=11" in output and "author='github-actions[bot]'" in output
+    assert "State comment id=12 ACCEPTED: selected as newest valid lifecycle state" in output
+    assert "State comment id=11 ACCEPTED: valid lifecycle state, but newer valid state already selected" in output
+    assert "State comment id=13 REJECTED: author 'someone-else' is not in the accepted author list" in output
+    assert "State comment id=14 REJECTED: PR number mismatch: stored=3 requested=12" in output
+    assert "State comment id=15 REJECTED: lifecycle marker framing is missing or altered" in output
+
+
 def test_lifecycle_summary_lists_all_three_states():
     body = append_lifecycle_summary(
         "Existing review summary",

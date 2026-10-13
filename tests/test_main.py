@@ -5,6 +5,13 @@ from reviewer.models import ReviewResult
 from reviewer.review import build_github_review_payload
 
 
+def test_github_token_kind_uses_prefix_not_length():
+    assert reviewer_main.github_token_kind("github_pat_short") == "fine-grained PAT"
+    assert reviewer_main.github_token_kind("ghp_short") == "classic PAT"
+    assert reviewer_main.github_token_kind("ghs_short") == "GitHub App or Actions token"
+    assert reviewer_main.github_token_kind("unknown") == "unrecognized token format"
+
+
 def install_fake_lifecycle(monkeypatch):
     class FakeLifecycle:
         def __init__(self, provider):
