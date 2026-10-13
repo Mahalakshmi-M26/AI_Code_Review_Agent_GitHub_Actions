@@ -31,6 +31,10 @@ def normalize_code_context(value: str) -> str:
     return re.sub(r"\s+", " ", value).strip().casefold()
 
 
+def normalize_issue_type(value: str) -> str:
+    return re.sub(r"[^a-z0-9]+", " ", value.casefold()).strip()
+
+
 def finding_fingerprint(
     finding: ReviewFinding | dict[str, Any],
     code_context: str,
@@ -39,13 +43,62 @@ def finding_fingerprint(
     severity = get_value("severity")
     if hasattr(severity, "value"):
         severity = severity.value
-    identity = "\x1f".join((
-        normalize_file_path(str(get_value("file"))),
-        normalize_text(str(get_value("category"))),
-        normalize_text(str(severity)),
-        normalize_code_context(code_context),
-    ))
+    file_path = normalize_file_path(str(get_value("file")))
+    issue_type_value = finding.get("issue_type", finding.get("category")) if isinstance(finding, dict) else finding.category
+    issue_type = normalize_issue_type(str(issue_type_value))
+    normalized_severity = normalize_text(str(severity))
+    line = get_value("line")
+    normalized_context = normalize_code_context(code_context)
+    context_digest = hashlib.sha256(normalized_context.encode("utf-8")).hexdigest()
+    location = f"line:{line}" if isinstance(line, int) and line > 0 else f"context_sha256:{context_digest}"
+    identity = "\x1f".join((file_path, issue_type, normalized_severity, location))
+    print(
+        f"[P3] Finding identity input file={file_path!r} issue_type={issue_type!r} "
+        f"severity={normalized_severity!r} line={line!r} "
+        f"location={location!r} title={str(get_value('title'))!r}"
+    )
     return hashlib.sha256(identity.encode("utf-8")).hexdigest()
+
+
+def _finding_location_score(previous: dict[str, Any], current: dict[str, Any]) -> int | None:
+    previous_category = normalize_issue_type(str(previous.get("issue_type") or previous.get("category") or ""))
+    current_category = normalize_issue_type(str(current.get("issue_type") or current.get("category") or ""))
+    previous_severity = normalize_text(str(previous.get("severity") or ""))
+    current_severity = normalize_text(str(current.get("severity") or ""))
+    if (
+        normalize_file_path(str(previous.get("file") or ""))
+        != normalize_file_path(str(current.get("file") or ""))
+        or not previous_category
+        or previous_category != current_category
+        or not previous_severity
+        or previous_severity != current_severity
+    ):
+        return None
+
+    previous_line = previous.get("line")
+    current_line = current.get("line")
+    if isinstance(previous_line, int) and previous_line > 0 and previous_line == current_line:
+        return 0
+
+    previous_context = previous.get("code_context")
+    current_context = current.get("code_context")
+    if (
+        isinstance(previous_context, str)
+        and bool(normalize_code_context(previous_context))
+        and isinstance(current_context, str)
+        and normalize_code_context(previous_context) == normalize_code_context(current_context)
+    ):
+        return 1
+
+    if (
+        isinstance(previous_line, int)
+        and previous_line > 0
+        and isinstance(current_line, int)
+        and current_line > 0
+        and abs(previous_line - current_line) <= 5
+    ):
+        return 10 + abs(previous_line - current_line)
+    return None
 
 
 def _source_code_context(
@@ -95,6 +148,7 @@ def build_finding_records(
             "file": normalize_file_path(finding.file),
             "line": finding.line,
             "category": finding.category,
+            "issue_type": normalize_issue_type(finding.category),
             "severity": finding.severity.value,
             "title": finding.title,
             "issue": finding.issue,
@@ -133,9 +187,45 @@ def compare_findings(
     existing_findings: list[dict[str, Any]] = []
     reopened_findings: list[dict[str, Any]] = []
     resolved_findings: list[dict[str, Any]] = []
+    matched_previous_ids: set[str] = set()
 
     for finding_id, current in current_by_id.items():
         previous = prior_by_id.get(finding_id)
+        match_reason = "finding_id" if previous is not None else "none"
+        if previous is None:
+            candidates = [
+                (score, previous_id, candidate)
+                for previous_id, candidate in prior_by_id.items()
+                if previous_id not in matched_previous_ids
+                if (score := _finding_location_score(candidate, current)) is not None
+            ]
+            if candidates:
+                best_score = min(score for score, _, _ in candidates)
+                best_candidates = [item for item in candidates if item[0] == best_score]
+            else:
+                best_candidates = []
+            if len(best_candidates) == 1:
+                _, previous_id, previous = best_candidates[0]
+                matched_previous_ids.add(previous_id)
+                match_reason = "stable_location"
+            elif best_candidates:
+                print(
+                    f"[P3] Finding identity ambiguous finding_id={finding_id} "
+                    f"title={current.get('title')!r} "
+                    f"candidates={[item[1] for item in best_candidates]}"
+                )
+        elif finding_id in prior_by_id:
+            matched_previous_ids.add(finding_id)
+
+        old_title = repr(previous.get("title")) if previous is not None else "None"
+        old_finding_id = repr(previous.get("finding_id")) if previous is not None else "None"
+        print(
+            f"[P3] Finding identity match result={match_reason} "
+            f"old_title={old_title} "
+            f"new_title={current.get('title')!r} "
+            f"old_finding_id={old_finding_id} "
+            f"new_finding_id={finding_id!r}"
+        )
         record = {
             **(previous or {}),
             **current,
@@ -154,7 +244,7 @@ def compare_findings(
         records[finding_id] = record
 
     for finding_id, previous in prior_by_id.items():
-        if finding_id in current_by_id:
+        if finding_id in current_by_id or finding_id in matched_previous_ids:
             continue
         record = dict(previous)
         record["head_sha"] = head_sha

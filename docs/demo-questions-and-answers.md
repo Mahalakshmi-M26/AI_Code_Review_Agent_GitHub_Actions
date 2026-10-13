@@ -338,7 +338,7 @@ Yes, when their file was covered by a complete, non-truncated review. Findings o
 `pull_request_read(method="get_review_comments")` retrieves thread IDs and resolution state. `pull_request_review_write(method="resolve_thread")` resolves fixed findings; `unresolve_thread` reopens returning findings.
 
 **What would stable finding identity mean?**
-A reproducible fingerprint derived from normalized file, issue/category, and relevant code evidence, designed to remain stable across harmless line shifts while distinguishing different findings.
+A reproducible fingerprint derived from normalized file, category/issue type, severity, and code location rather than AI-generated wording. Legacy records can be matched by a unique nearby location or unchanged code context.
 
 **How are findings compared across commits?**
 The agent persists finding fingerprints and thread IDs in a hidden PR comment, then classifies each synchronize result as new, existing, resolved, or reopened.

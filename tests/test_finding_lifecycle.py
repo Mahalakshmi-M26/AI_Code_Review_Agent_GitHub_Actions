@@ -195,14 +195,32 @@ def review_thread(thread_id: str, body: str, resolved: bool = False) -> dict:
     }
 
 
-def test_fingerprint_is_stable_across_line_shifts_and_normalization():
+def test_fingerprint_uses_code_location_and_comparison_matches_line_shifts():
     earlier = finding("Validate owner", 10, "if owner_id is None:\n    raise ValueError()")
     later = finding(" validate   OWNER ", 37, " if owner_id is None:  raise ValueError() ")
+    earlier_id = finding_fingerprint(earlier, earlier["code_context"])
+    later_id = finding_fingerprint(later, later["code_context"])
 
-    assert finding_fingerprint(earlier, earlier["code_context"]) == finding_fingerprint(
-        later,
-        later["code_context"],
+    assert earlier_id != later_id
+    compared = compare_findings(
+        [{
+            **record(earlier_id, earlier["title"]),
+            "file": earlier["file"],
+            "category": earlier["category"],
+            "issue_type": "security",
+            "severity": earlier["severity"],
+            "line": earlier["line"],
+            "code_context": earlier["code_context"],
+        }],
+        [{**later, "finding_id": later_id, "issue_type": "security"}],
+        repository="octo/demo",
+        pr_number=12,
+        head_sha="new-head",
+        reviewed_files=["src/app.py"],
     )
+    assert len(compared["existing_findings"]) == 1
+    assert compared["new_findings"] == []
+    assert compared["resolved_findings"] == []
 
 
 def test_title_wording_changes_keep_finding_existing():
@@ -232,6 +250,95 @@ def test_title_wording_changes_keep_finding_existing():
     assert len(compared["existing_findings"]) == 1
     assert compared["resolved_findings"] == []
     assert compared["new_findings"] == []
+
+
+@pytest.mark.parametrize(
+    ("old_title", "new_title"),
+    [
+        ("REST endpoints use verb-based paths", "Non-RESTful endpoint naming conventions"),
+        ("PAT used in workflow secrets", "Use of PAT_TOKEN in workflow may grant excessive privileges"),
+    ],
+)
+def test_paraphrased_finding_at_same_location_is_existing(old_title, new_title, capsys):
+    old_finding = {
+        **finding(old_title, 18, "run: echo ${{ secrets.PAT_TOKEN }}"),
+        "issue_type": "security",
+    }
+    current_finding = {
+        **finding(new_title, 18, "run: echo ${{ secrets.PAT_TOKEN }}"),
+        "issue_type": "security",
+    }
+    old_id = finding_fingerprint(old_finding, old_finding["code_context"])
+    current_id = finding_fingerprint(current_finding, current_finding["code_context"])
+
+    compared = compare_findings(
+        [{
+            **record(old_id, old_title),
+            "file": old_finding["file"],
+            "category": old_finding["category"],
+            "issue_type": old_finding["issue_type"],
+            "severity": old_finding["severity"],
+            "line": old_finding["line"],
+            "code_context": old_finding["code_context"],
+        }],
+        [{**current_finding, "finding_id": current_id}],
+        repository="octo/demo",
+        pr_number=12,
+        head_sha="new-head",
+        reviewed_files=["src/app.py"],
+    )
+
+    assert [item["title"] for item in compared["existing_findings"]] == [new_title]
+    assert compared["new_findings"] == []
+    assert compared["resolved_findings"] == []
+    output = capsys.readouterr().out
+    assert f"old_title={old_title!r}" in output
+    assert f"new_title={new_title!r}" in output
+    assert "match result=finding_id" in output
+
+
+def test_one_code_edit_does_not_split_nearby_findings_into_new_and_resolved():
+    previous = []
+    current = []
+    for line, finding_id in enumerate(("A", "B", "C"), start=30):
+        old = {
+            **record(finding_id, f"Old wording {finding_id}"),
+            "file": "src/app.py",
+            "category": "Security",
+            "issue_type": "security",
+            "severity": "HIGH",
+            "line": line,
+            "code_context": f"old nearby source context {finding_id}",
+        }
+        new = {
+            **old,
+            "finding_id": finding_fingerprint(
+                {
+                    **old,
+                    "title": f"Reworded finding {finding_id}",
+                    "line": line,
+                },
+                f"changed nearby source context {finding_id}",
+            ),
+            "title": f"Reworded finding {finding_id}",
+            "code_context": f"changed nearby source context {finding_id}",
+        }
+        old["finding_id"] = f"legacy-context-hash-{finding_id}"
+        previous.append(old)
+        current.append(new)
+
+    compared = compare_findings(
+        previous,
+        current,
+        repository="octo/demo",
+        pr_number=12,
+        head_sha="new-head",
+        reviewed_files=["src/app.py"],
+    )
+
+    assert len(compared["existing_findings"]) == 3
+    assert compared["new_findings"] == []
+    assert compared["resolved_findings"] == []
 
 
 def test_comparison_classifies_new_existing_and_resolved_findings():
@@ -347,9 +454,20 @@ def test_build_finding_records_uses_source_context_stable_across_line_shifts(tmp
     })
     later = build_finding_records(shifted_result, {}, str(tmp_path))[0]
 
-    assert earlier["finding_id"] == later["finding_id"]
+    assert earlier["finding_id"] != later["finding_id"]
     assert earlier["line"] == 2
     assert later["line"] == 3
+    compared = compare_findings(
+        [{**earlier, "repository": "octo/demo", "pr_number": 12}],
+        [later],
+        repository="octo/demo",
+        pr_number=12,
+        head_sha="new-head",
+        reviewed_files=["src/app.py"],
+    )
+    assert len(compared["existing_findings"]) == 1
+    assert compared["new_findings"] == []
+    assert compared["resolved_findings"] == []
 
 
 def test_reconcile_resolves_only_missing_finding_thread(monkeypatch):

@@ -119,7 +119,7 @@ A push to the PR branch triggers `synchronize`, and the reviewer reads the new c
 
 ### 27.1 Finding Identity and Durable State
 
-The finding ID is SHA-256 over normalized file path, category, severity, title, and source-code context. Line number is deliberately excluded. Source context comes from the checked-out target file around a validated finding line; summary-only findings use changed-line content from that file as fallback context. This keeps identity stable for ordinary line shifts while allowing materially changed code or finding metadata to become a distinct identity.
+The finding ID is SHA-256 over normalized file path, normalized category/issue type, severity, and validated code line. When a finding has no line, normalized source context is used as a fallback. Titles and issue prose do not define identity. During comparison, legacy IDs are matched one-to-one by file, category/issue type, severity, and exact line, unchanged context, or a unique nearest line within five lines. Ambiguous matches are not merged. This keeps reworded findings and nearby findings stable through small edits without treating changed AI wording as a new issue.
 
 The latest state is stored in one hidden HTML-comment block in a Pull Request conversation comment. It contains version, repository, PR number, and finding records with `finding_id`, `thread_id`, `pr_number`, `repository`, `head_sha`, `status`, and the matching details needed for recovery. The first run creates it with MCP `add_issue_comment`; later runs replace it with `update_issue_comment`. The reader accepts only a marker written by `github-actions[bot]` for the matching repository and PR.
 
