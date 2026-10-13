@@ -212,7 +212,7 @@ A successful empty `get_files` response returns zero files; `get_diff` and GEP a
 There is no code evidence for model analysis. Skipping avoids an unnecessary request and prevents fabricated findings.
 
 **What happens when a developer fixes an issue and pushes again?**
-The push triggers synchronize. The reviewer compares stable finding identities, resolves tracked threads for fixed findings when review coverage is complete, and publishes inline comments only for new findings.
+The push triggers synchronize. The reviewer compares stable finding identities, resolves a missing finding only when its saved file and line were represented in a complete diff hunk sent to the AI, and publishes inline comments only for new findings. Findings outside the current diff remain open as not re-evaluated.
 
 **Where is lifecycle state stored?**
 In a hidden HTML-comment block in a PR conversation comment, read and updated through GitHub MCP issue-comment tools. It records finding IDs, thread IDs, current head SHA, and open/resolved status. Artifacts require cross-run retrieval and retention management; a JSON file would pollute the PR branch.

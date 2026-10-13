@@ -458,6 +458,7 @@ class GitHubMCPFindingLifecycle:
         current_findings: list[dict[str, Any]],
         reviewed_files: list[str],
         resolve_unreviewed: bool = False,
+        reviewed_line_scope: dict[str, set[int]] | None = None,
     ) -> dict[str, Any]:
         """Read durable state, reconcile existing threads, and save this revision's findings."""
         repository = f"{owner}/{repo}"
@@ -542,6 +543,7 @@ class GitHubMCPFindingLifecycle:
                 head_sha,
                 reviewed_files,
                 resolve_unreviewed,
+                reviewed_line_scope,
             )
             records_by_id = {str(record["finding_id"]): record for record in comparison["records"]}
 
@@ -592,7 +594,11 @@ class GitHubMCPFindingLifecycle:
                 )
                 thread_id = finding.get("thread_id")
                 thread = threads_by_id.get(str(thread_id)) if thread_id else None
-                if thread is not None and self._thread_resolved(thread):
+                if (
+                    finding.get("evaluation_status") != "not_re_evaluated"
+                    and thread is not None
+                    and self._thread_resolved(thread)
+                ):
                     await self._set_thread_resolution(session, owner, repo, pull_number, str(thread_id), False)
                     if not any(item["finding_id"] == finding["finding_id"] for item in comparison["reopened_findings"]):
                         comparison["reopened_findings"].append(finding)

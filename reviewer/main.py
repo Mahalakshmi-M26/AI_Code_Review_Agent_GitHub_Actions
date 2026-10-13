@@ -6,6 +6,7 @@ import os
 import sys
 from pathlib import Path
 
+from reviewer.diff_parser import build_reviewed_line_scope_from_prompt_diff
 from reviewer.review import (
     MAX_FILE_DIFF_CHARS,
     MAX_FILES,
@@ -118,6 +119,7 @@ def post_review_with_lifecycle(
     changed_line_map: dict | None = None,
     reviewed_files: list[str] | None = None,
     resolve_unreviewed: bool = False,
+    reviewed_line_scope: dict[str, set[int]] | None = None,
 ) -> dict:
     if review_result is not None:
         print(f"[FINDINGS] stage=before_lifecycle_identity count={len(review_result.findings)}")
@@ -144,6 +146,7 @@ def post_review_with_lifecycle(
             current_findings=lifecycle_findings,
             reviewed_files=reviewed_files or [],
             resolve_unreviewed=resolve_unreviewed,
+            reviewed_line_scope=reviewed_line_scope or {},
         )
     )
 
@@ -263,6 +266,7 @@ def main() -> None:
         max_file_diff_chars=int(os.getenv("MAX_FILE_DIFF_CHARS", str(MAX_FILE_DIFF_CHARS))),
         max_review_input_chars=int(os.getenv("MAX_REVIEW_INPUT_CHARS", str(MAX_REVIEW_INPUT_CHARS))),
     )
+    reviewed_line_scope = build_reviewed_line_scope_from_prompt_diff(filtered["diff_text"])
     max_files = int(os.getenv("MAX_FILES", str(MAX_FILES)))
     max_file_diff_chars = int(os.getenv("MAX_FILE_DIFF_CHARS", str(MAX_FILE_DIFF_CHARS)))
     max_review_input_chars = int(os.getenv("MAX_REVIEW_INPUT_CHARS", str(MAX_REVIEW_INPUT_CHARS)))
@@ -396,6 +400,7 @@ def main() -> None:
     complete_diff = "[truncated]" not in filtered["diff_text"]
     complete_file_selection = len(filtered["files_reviewed"]) + len(filtered["files_skipped"]) == len(files_payload)
     lifecycle_reviewed_files = filtered["files_reviewed"] if complete_diff and complete_file_selection else []
+    lifecycle_reviewed_line_scope = reviewed_line_scope if complete_diff and complete_file_selection else {}
     post_review_with_lifecycle(
         github_provider,
         lifecycle_provider,
@@ -407,6 +412,7 @@ def main() -> None:
         review_result=review_result,
         changed_line_map=filtered["changed_line_map"],
         reviewed_files=lifecycle_reviewed_files,
+        reviewed_line_scope=lifecycle_reviewed_line_scope,
     )
 
     print("AI PR REVIEW POSTED SUCCESSFULLY")

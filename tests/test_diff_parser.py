@@ -1,4 +1,8 @@
-from reviewer.diff_parser import build_changed_line_map, parse_unified_diff
+from reviewer.diff_parser import (
+    build_changed_line_map,
+    build_reviewed_line_scope_from_prompt_diff,
+    parse_unified_diff,
+)
 from reviewer.models import ReviewResult
 from reviewer.review import (
     build_github_review_payload,
@@ -86,6 +90,21 @@ def test_changed_line_extraction_handles_multiple_hunks():
         {"line": 2, "content": "inserted near top"},
         {"line": 22, "content": "inserted near bottom"},
     ]
+
+
+def test_reviewed_line_scope_includes_old_new_and_context_lines():
+    prompt_diff = (
+        "FILE: src/employee.py\n"
+        "@@ -18,4 +18,3 @@ deleteEmployee\n"
+        " context before\n"
+        "-removed employee deletion\n"
+        "+updated employee deletion\n"
+        " context after\n"
+    )
+
+    assert build_reviewed_line_scope_from_prompt_diff(prompt_diff) == {
+        "src/employee.py": {18, 19, 20},
+    }
 
 
 def test_invalid_model_line_is_rejected_to_null():

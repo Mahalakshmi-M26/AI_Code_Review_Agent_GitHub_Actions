@@ -4,6 +4,7 @@ import re
 from typing import Any
 
 HUNK_HEADER = re.compile(r"^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@")
+HUNK_SCOPE_HEADER = re.compile(r"^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@")
 FILE_HEADER = re.compile(r"(?m)^FILE: (.+)\n")
 
 
@@ -63,3 +64,47 @@ def build_changed_line_map_from_prompt_diff(diff_text: str) -> dict[str, list[di
         patch = diff_text[header.end():end]
         line_map[file_name] = parse_unified_diff(patch)
     return line_map
+
+
+def parse_unified_diff_review_scope(patch: str) -> set[int]:
+    """Return old/new line numbers represented in diff hunks sent to the model."""
+    reviewed_lines: set[int] = set()
+    old_line: int | None = None
+    new_line: int | None = None
+
+    for diff_line in patch.splitlines():
+        hunk = HUNK_SCOPE_HEADER.match(diff_line)
+        if hunk:
+            old_line = int(hunk.group(1))
+            new_line = int(hunk.group(3))
+            continue
+
+        if old_line is None or new_line is None or diff_line.startswith("\\"):
+            continue
+        if diff_line.startswith(("+++", "---")):
+            continue
+        if diff_line.startswith("+"):
+            reviewed_lines.add(new_line)
+            new_line += 1
+        elif diff_line.startswith("-"):
+            reviewed_lines.add(old_line)
+            old_line += 1
+        elif diff_line.startswith(" "):
+            reviewed_lines.add(old_line)
+            reviewed_lines.add(new_line)
+            old_line += 1
+            new_line += 1
+
+    return reviewed_lines
+
+
+def build_reviewed_line_scope_from_prompt_diff(diff_text: str) -> dict[str, set[int]]:
+    """Map each file to old/new line numbers actually represented in bounded prompt diff."""
+    headers = list(FILE_HEADER.finditer(diff_text))
+    scope: dict[str, set[int]] = {}
+    for index, header in enumerate(headers):
+        end = headers[index + 1].start() if index + 1 < len(headers) else len(diff_text)
+        file_name = header.group(1).strip()
+        patch = diff_text[header.end():end]
+        scope[file_name] = parse_unified_diff_review_scope(patch)
+    return scope

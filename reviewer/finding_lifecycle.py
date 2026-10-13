@@ -168,6 +168,7 @@ def compare_findings(
     head_sha: str,
     reviewed_files: list[str],
     resolve_unreviewed: bool = False,
+    reviewed_line_scope: dict[str, set[int]] | None = None,
 ) -> dict[str, Any]:
     prior_by_id = {
         str(record.get("finding_id")): record
@@ -200,6 +201,15 @@ def compare_findings(
         f"discarded={len(current_findings) - len(current_by_id)}"
     )
     reviewed = {normalize_file_path(path) for path in reviewed_files}
+    line_scope = {
+        normalize_file_path(path): lines
+        for path, lines in (reviewed_line_scope or {}).items()
+    }
+    if resolve_unreviewed:
+        print(
+            "[P3] resolve_unreviewed override ignored for resolution: "
+            "a previous finding must have a line in the current AI-reviewed diff scope"
+        )
     records: dict[str, dict[str, Any]] = {}
     new_findings: list[dict[str, Any]] = []
     existing_findings: list[dict[str, Any]] = []
@@ -267,9 +277,30 @@ def compare_findings(
         record = dict(previous)
         record["head_sha"] = head_sha
         file_path = normalize_file_path(str(record.get("file", "")))
-        if record.get("status") == "open" and (resolve_unreviewed or file_path in reviewed):
+        previous_line = record.get("line")
+        in_review_scope = (
+            file_path in reviewed
+            and isinstance(previous_line, int)
+            and previous_line in line_scope.get(file_path, set())
+        )
+        reviewed_by_ai = in_review_scope
+        if record.get("status") == "open" and reviewed_by_ai:
             record["status"] = "resolved"
             resolved_findings.append(record)
+            decision = "resolved: location was re-evaluated and finding is absent"
+        elif record.get("status") == "open":
+            decision = "kept existing: location was not re-evaluated"
+            existing_record = dict(record)
+            existing_record["evaluation_status"] = "not_re_evaluated"
+            existing_findings.append(existing_record)
+        else:
+            decision = f"preserved prior status={record.get('status')!r}"
+        print(
+            f"[P3] Resolution scope previous finding_id={finding_id!r} "
+            f"title={record.get('title')!r} file={file_path!r} line={previous_line!r} "
+            f"in_current_diff={in_review_scope} reviewed_by_ai={reviewed_by_ai} "
+            f"resolution_decision={decision}"
+        )
         records[finding_id] = record
 
     return {

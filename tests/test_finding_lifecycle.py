@@ -342,7 +342,7 @@ def test_one_code_edit_does_not_split_nearby_findings_into_new_and_resolved():
 
 
 def test_comparison_classifies_new_existing_and_resolved_findings():
-    previous = [record("A", "A"), record("B", "B"), record("C", "C")]
+    previous = [{**record("A", "A"), "line": 1}, record("B", "B"), record("C", "C")]
     current = [
         {**record("B", "B"), "head_sha": "new-head"},
         {**record("C", "C"), "head_sha": "new-head"},
@@ -356,6 +356,7 @@ def test_comparison_classifies_new_existing_and_resolved_findings():
         pr_number=12,
         head_sha="new-head",
         reviewed_files=["src/app.py"],
+        reviewed_line_scope={"src/app.py": {1}},
     )
 
     assert [item["finding_id"] for item in compared["new_findings"]] == ["D"]
@@ -364,6 +365,56 @@ def test_comparison_classifies_new_existing_and_resolved_findings():
     assert compared["resolved_findings"][0]["status"] == "resolved"
     records_by_id = {item["finding_id"]: item for item in compared["records"]}
     assert records_by_id["B"]["thread_id"] == "thread-B"
+
+
+def test_seven_previous_three_current_resolves_only_finding_in_delete_employee_diff(capsys):
+    previous = [
+        {
+            **record(f"OLD-{line}", f"Old finding at {line}"),
+            "file": "src/employee.py",
+            "category": "Security",
+            "severity": "HIGH",
+            "line": line,
+        }
+        for line in (2, 5, 8, 19, 25, 30, 40)
+    ]
+    current = [
+        {**previous[0]},
+        {**previous[1]},
+        {
+            **record("NEW-20", "Current deleteEmployee finding"),
+            "file": "src/employee.py",
+            "category": "Reliability",
+            "severity": "MEDIUM",
+            "line": 20,
+        },
+    ]
+
+    compared = compare_findings(
+        previous,
+        current,
+        repository="octo/demo",
+        pr_number=12,
+        head_sha="new-head",
+        reviewed_files=["src/employee.py"],
+        reviewed_line_scope={"src/employee.py": {18, 19, 20}},
+    )
+
+    assert len(previous) == 7
+    assert len(current) == 3
+    assert [finding["finding_id"] for finding in compared["resolved_findings"]] == ["OLD-19"]
+    assert [finding["finding_id"] for finding in compared["new_findings"]] == ["NEW-20"]
+    existing_by_id = {finding["finding_id"]: finding for finding in compared["existing_findings"]}
+    assert set(existing_by_id) == {"OLD-2", "OLD-5", "OLD-8", "OLD-25", "OLD-30", "OLD-40"}
+    assert all(
+        existing_by_id[f"OLD-{line}"]["evaluation_status"] == "not_re_evaluated"
+        for line in (8, 25, 30, 40)
+    )
+    output = capsys.readouterr().out
+    assert "file='src/employee.py' line=19 in_current_diff=True reviewed_by_ai=True" in output
+    assert "resolution_decision=resolved: location was re-evaluated and finding is absent" in output
+    assert "file='src/employee.py' line=25 in_current_diff=False reviewed_by_ai=False" in output
+    assert "resolution_decision=kept existing: location was not re-evaluated" in output
 
 
 def test_comparison_logs_duplicate_identity_discard(capsys):
@@ -400,6 +451,25 @@ def test_unreviewed_file_does_not_resolve_finding():
 
     assert compared["resolved_findings"] == []
     assert compared["records"][0]["status"] == "open"
+
+
+def test_resolve_unreviewed_override_cannot_resolve_without_ai_line_scope(capsys):
+    compared = compare_findings(
+        [{**record("A", "A"), "line": 12}],
+        [],
+        repository="octo/demo",
+        pr_number=12,
+        head_sha="new-head",
+        reviewed_files=["src/app.py"],
+        resolve_unreviewed=True,
+        reviewed_line_scope={},
+    )
+
+    assert compared["resolved_findings"] == []
+    assert len(compared["existing_findings"]) == 1
+    assert compared["existing_findings"][0]["evaluation_status"] == "not_re_evaluated"
+    assert compared["records"][0]["status"] == "open"
+    assert "resolve_unreviewed override ignored for resolution" in capsys.readouterr().out
 
 
 def test_resolved_finding_returning_is_existing_and_reopened():
@@ -529,7 +599,7 @@ def test_build_finding_records_uses_source_context_stable_across_line_shifts(tmp
 
 def test_reconcile_resolves_only_missing_finding_thread(monkeypatch):
     calls = []
-    previous = [record("A", "A"), record("B", "B")]
+    previous = [{**record("A", "A"), "line": 1}, {**record("B", "B"), "line": 2}]
     comments = [state_comment(91, previous)]
     threads = [review_thread("thread-A", "old A"), review_thread("thread-B", "old B")]
 
@@ -547,6 +617,7 @@ def test_reconcile_resolves_only_missing_finding_thread(monkeypatch):
 
     compared = asyncio.run(manager.reconcile(
         "octo", "demo", 12, "new-head", current, ["src/app.py"],
+        reviewed_line_scope={"src/app.py": {1}},
     ))
 
     assert [item["finding_id"] for item in compared["resolved_findings"]] == ["A"]
@@ -561,8 +632,8 @@ def test_reconcile_resolves_only_missing_finding_thread(monkeypatch):
 def test_reconcile_loads_pat_authored_state_and_resolves_removed_findings(monkeypatch, capsys):
     calls = []
     previous = [
-        {**record("REMOVED", "Removed finding"), "thread_id": "thread-removed"},
-        {**record("CURRENT", "Current finding"), "thread_id": "thread-current"},
+        {**record("REMOVED", "Removed finding"), "thread_id": "thread-removed", "line": 1},
+        {**record("CURRENT", "Current finding"), "thread_id": "thread-current", "line": 2},
     ]
     comments = [state_comment(91, previous, author="Mahalakshmi-M26")]
     threads = [
@@ -582,6 +653,7 @@ def test_reconcile_loads_pat_authored_state_and_resolves_removed_findings(monkey
 
     compared = asyncio.run(manager.reconcile(
         "octo", "demo", 12, "new-head", [record("CURRENT", "Current finding")], ["src/app.py"],
+        reviewed_line_scope={"src/app.py": {1}},
     ))
 
     assert [item["finding_id"] for item in compared["existing_findings"]] == ["CURRENT"]
@@ -597,7 +669,7 @@ def test_reconcile_loads_pat_authored_state_and_resolves_removed_findings(monkey
 
 def test_reconcile_continues_and_persists_retryable_state_when_resolve_fails(monkeypatch, capsys):
     calls = []
-    previous = [record("A", "A")]
+    previous = [{**record("A", "A"), "line": 1}]
     comments = [state_comment(91, previous)]
     threads = [review_thread("thread-A", "old A")]
 
@@ -618,6 +690,7 @@ def test_reconcile_continues_and_persists_retryable_state_when_resolve_fails(mon
 
     compared = asyncio.run(manager.reconcile(
         "octo", "demo", 12, "new-head", [], ["src/app.py"],
+        reviewed_line_scope={"src/app.py": {1}},
     ))
 
     assert [item["finding_id"] for item in compared["resolved_findings"]] == ["A"]
@@ -639,6 +712,38 @@ def test_reconcile_continues_and_persists_retryable_state_when_resolve_fails(mon
     output = capsys.readouterr().out
     assert "[P3] WARNING: Failed to resolve thread thread-A. Continuing." in output
     assert "Resource not accessible by integration" in output
+
+
+def test_out_of_scope_previous_finding_is_existing_without_unresolving_thread(monkeypatch):
+    calls = []
+    previous = [{**record("OUTSIDE", "Outside hunk"), "line": 80}]
+    comments = [state_comment(91, previous)]
+    threads = [review_thread("thread-OUTSIDE", "outside hunk", resolved=True)]
+
+    def responder(name, arguments):
+        if arguments.get("method") == "get_comments":
+            return mcp_payload(comments)
+        if arguments.get("method") == "get_review_comments":
+            return mcp_payload({"review_threads": threads, "pageInfo": {"hasNextPage": False}})
+        return mcp_json_text({"message": "ok"})
+
+    install_fake_lifecycle_mcp(monkeypatch, responder, calls)
+    manager = GitHubMCPFindingLifecycle(GitHubMCPProvider(token="test-token"))
+
+    compared = asyncio.run(manager.reconcile(
+        "octo",
+        "demo",
+        12,
+        "new-head",
+        [],
+        ["src/app.py"],
+        reviewed_line_scope={"src/app.py": {10, 11, 12}},
+    ))
+
+    assert [item["finding_id"] for item in compared["existing_findings"]] == ["OUTSIDE"]
+    assert compared["existing_findings"][0]["evaluation_status"] == "not_re_evaluated"
+    assert compared["resolved_findings"] == []
+    assert not any(name == "pull_request_review_write" for name, _ in calls)
 
 
 def test_reconcile_does_not_suppress_unrelated_mcp_tool_errors(monkeypatch):
@@ -679,6 +784,7 @@ def test_reconcile_backfills_legacy_thread_before_resolving(monkeypatch, capsys)
         "thread_id": None,
         "inline_body": "Original comment wording",
         "status": "open",
+        "line": 1,
     }]
     comments = [state_comment(91, previous)]
     threads = [review_thread(
@@ -697,6 +803,7 @@ def test_reconcile_backfills_legacy_thread_before_resolving(monkeypatch, capsys)
     manager = GitHubMCPFindingLifecycle(GitHubMCPProvider(token="test-token"))
     compared = asyncio.run(manager.reconcile(
         "octo", "demo", 12, "new-head", [], ["src/app.py"],
+        reviewed_line_scope={"src/app.py": {1}},
     ))
 
     assert [item["finding_id"] for item in compared["resolved_findings"]] == [finding_id]
@@ -723,8 +830,8 @@ def test_reconcile_backfills_legacy_thread_before_resolving(monkeypatch, capsys)
 def test_reconcile_matches_findings_from_actions_and_pat_user_authors(monkeypatch):
     calls = []
     previous = [
-        {**record("A", "A"), "thread_id": None},
-        {**record("B", "B"), "thread_id": None},
+        {**record("A", "A"), "thread_id": None, "line": 1},
+        {**record("B", "B"), "thread_id": None, "line": 2},
     ]
     comments = [state_comment(91, previous)]
     threads = [
@@ -756,6 +863,7 @@ def test_reconcile_matches_findings_from_actions_and_pat_user_authors(monkeypatc
     install_fake_lifecycle_mcp(monkeypatch, responder, calls)
     compared = asyncio.run(GitHubMCPFindingLifecycle(GitHubMCPProvider(token="test-token")).reconcile(
         "octo", "demo", 12, "new-head", [record("B", "B")], ["src/app.py"],
+        reviewed_line_scope={"src/app.py": {1}},
     ))
 
     assert [item["finding_id"] for item in compared["existing_findings"]] == ["B"]
@@ -924,6 +1032,7 @@ def test_finalize_matches_mcp_author_and_resolves_thread(monkeypatch, capsys):
             **record(finding_id, "D"),
             "thread_id": None,
             "inline_body": "new review body",
+            "line": 20,
         }],
         "state_comment_id": 91,
         "thread_ids_before": set(),
@@ -947,6 +1056,7 @@ def test_finalize_matches_mcp_author_and_resolves_thread(monkeypatch, capsys):
 
     second_review = asyncio.run(manager.reconcile(
         "octo", "demo", 12, "next-head", [], ["src/app.py"],
+        reviewed_line_scope={"src/app.py": {20}},
     ))
 
     assert [item["finding_id"] for item in second_review["resolved_findings"]] == [finding_id]
