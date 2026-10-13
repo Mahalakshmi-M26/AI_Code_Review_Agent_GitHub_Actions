@@ -90,6 +90,53 @@ def test_call_capgemini_rejects_malformed_json(monkeypatch):
         )
 
 
+def test_call_capgemini_logs_timeout_duration_and_config(monkeypatch, capsys):
+    times = iter((100.0, 161.25))
+    monkeypatch.setattr(review.time, "perf_counter", lambda: next(times))
+
+    def fake_post(*args, **kwargs):
+        assert kwargs["timeout"] == 60
+        raise review.httpx.ReadTimeout("upstream read timed out")
+
+    monkeypatch.setattr(review.httpx, "post", fake_post)
+
+    with pytest.raises(RuntimeError, match="request timed out"):
+        review.call_capgemini(
+            policy_text="policy",
+            user_prompt="prompt",
+            api_key="abc",
+            model="openai.gpt-5",
+            base_url="https://example.com/v1",
+            timeout_seconds=60,
+        )
+
+    output = capsys.readouterr().out
+    assert "duration_seconds=61.25" in output
+    assert "configured_timeout_seconds=60" in output
+    assert "exception=ReadTimeout" in output
+
+
+def test_call_capgemini_reports_auth_http_status_separately(monkeypatch, capsys):
+    class UnauthorizedResponse:
+        status_code = 401
+        text = "invalid credential"
+
+    monkeypatch.setattr(review.httpx, "post", lambda *args, **kwargs: UnauthorizedResponse())
+
+    with pytest.raises(RuntimeError, match="HTTP 401"):
+        review.call_capgemini(
+            policy_text="policy",
+            user_prompt="prompt",
+            api_key="abc",
+            model="openai.gpt-5",
+            base_url="https://example.com/v1",
+        )
+
+    output = capsys.readouterr().out
+    assert "http_status=401" in output
+    assert "timed out" not in output
+
+
 def test_no_meaningful_files_returns_empty_diff():
     filtered = review.filter_changed_files([])
     assert filtered["files_reviewed"] == []

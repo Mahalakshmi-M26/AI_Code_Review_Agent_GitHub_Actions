@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+import time
 from typing import Any
 
 import httpx
@@ -358,6 +359,7 @@ def call_capgemini(
         ],
     }
 
+    request_started = time.perf_counter()
     try:
         response = httpx.post(
             url,
@@ -369,7 +371,28 @@ def call_capgemini(
             timeout=timeout_seconds,
         )
     except httpx.TimeoutException as exc:
+        request_duration = time.perf_counter() - request_started
+        print(
+            f"[AI] GEP request timed out duration_seconds={request_duration:.2f} "
+            f"configured_timeout_seconds={timeout_seconds} "
+            f"exception={type(exc).__name__}"
+        )
         raise RuntimeError("Generative Engine request timed out.") from exc
+    except httpx.RequestError as exc:
+        request_duration = time.perf_counter() - request_started
+        print(
+            f"[AI] GEP network request failed duration_seconds={request_duration:.2f} "
+            f"exception={type(exc).__name__}"
+        )
+        raise RuntimeError(
+            f"Generative Engine network request failed ({type(exc).__name__})."
+        ) from exc
+
+    request_duration = time.perf_counter() - request_started
+    print(
+        f"[AI] GEP response received duration_seconds={request_duration:.2f} "
+        f"http_status={response.status_code}"
+    )
 
     if response.status_code >= 400:
         message = response.text[:300].strip()

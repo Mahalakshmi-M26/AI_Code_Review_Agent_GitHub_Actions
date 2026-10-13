@@ -292,6 +292,14 @@ def main() -> None:
     base_url = os.getenv("OPENAI_BASE_URL", "https://openai.generative.engine.capgemini.com/v1")
     timeout_seconds = int(os.getenv("REVIEW_TIMEOUT_SECONDS", str(REVIEW_TIMEOUT_SECONDS)))
 
+    print(
+        f"[AI] GEP request settings model={model_name!r} "
+        f"timeout_seconds={timeout_seconds} "
+        f"prompt_chars={len(prompt)} prompt_bytes={len(prompt.encode('utf-8'))} "
+        f"policy_chars={len(policy_text)} "
+        f"diff_chars={len(filtered['diff_text'])} "
+        f"diff_bytes={len(filtered['diff_text'].encode('utf-8'))}"
+    )
     print("[AI] Calling Capgemini Generative Engine")
     raw_response = call_capgemini(
         policy_text=policy_text,
