@@ -26,6 +26,7 @@ class GitHubMCPFindingLifecycle:
 
     PAGE_SIZE = 100
     STATE_AUTHOR = "github-actions[bot]"
+    STATE_COMMENT_AUTHORS = {STATE_AUTHOR, "github-actions", "Mahalakshmi-M26"}
     REVIEW_COMMENT_AUTHORS = {"github-actions", STATE_AUTHOR, "Mahalakshmi-M26"}
 
     def __init__(self, provider: GitHubMCPProvider) -> None:
@@ -309,7 +310,7 @@ class GitHubMCPFindingLifecycle:
             user = comment.get("user") or comment.get("author") or {}
             login = user.get("login") if isinstance(user, dict) else None
             body = comment.get("body")
-            if login != cls.STATE_AUTHOR or not isinstance(body, str):
+            if login not in cls.STATE_COMMENT_AUTHORS or not isinstance(body, str):
                 continue
             records = decode_lifecycle_state(body, repository, pull_number)
             if records is None:
@@ -393,8 +394,15 @@ class GitHubMCPFindingLifecycle:
         """Read durable state, reconcile existing threads, and save this revision's findings."""
         repository = f"{owner}/{repo}"
         async with self._session() as session:
+            print(f"[P3] Lifecycle state location: PR issue comment {repository}#{pull_number}")
             comments = await self._read_pr_comments(session, owner, repo, pull_number)
             state_comment_id, previous_records = self._find_state_comment(comments, repository, pull_number)
+            previous_ids = [str(record["finding_id"]) for record in previous_records]
+            print(
+                f"[P3] Loaded lifecycle state comment id={state_comment_id} "
+                f"finding_count={len(previous_records)}"
+            )
+            print(f"[P3] Loaded lifecycle finding IDs: {previous_ids}")
             threads = await self._read_threads(session, owner, repo, pull_number)
             used_thread_ids: set[str] = set()
             threads_by_id = {
@@ -456,8 +464,10 @@ class GitHubMCPFindingLifecycle:
                         "status": "resolved" if self._thread_resolved(match) else "open",
                     }
 
+            comparison_previous = list(previous_by_id.values())
+            comparison_previous_ids = [str(record["finding_id"]) for record in comparison_previous]
             comparison = compare_findings(
-                list(previous_by_id.values()),
+                comparison_previous,
                 current,
                 repository,
                 pull_number,
@@ -467,7 +477,8 @@ class GitHubMCPFindingLifecycle:
             )
             records_by_id = {str(record["finding_id"]): record for record in comparison["records"]}
 
-            print(f"[P3] Previous findings: {len(previous_records)}")
+            print(f"[P3] Previous findings: {len(comparison_previous)}")
+            print(f"[P3] Previous finding IDs: {comparison_previous_ids}")
             print(f"[P3] Current findings: {len(current)}")
             print(f"[P3] Resolved findings: {len(comparison['resolved_findings'])}")
 
@@ -570,6 +581,8 @@ class GitHubMCPFindingLifecycle:
 
             state_comment_id = comparison.get("state_comment_id")
             print("[P3] Saving lifecycle state")
+            print(f"[P3] Lifecycle state location: PR issue comment {owner}/{repo}#{pull_number}")
+            print(f"[P3] Saved lifecycle finding IDs: {[str(record['finding_id']) for record in records]}")
 
             for record in records:
                 print(
@@ -577,6 +590,14 @@ class GitHubMCPFindingLifecycle:
                     f"{record.get('finding_id')} "
                     f"thread={record.get('thread_id')}"
                 )
-            await self._save_state(session, owner, repo, pull_number, state_comment_id, records)
+            saved_comment_id = await self._save_state(
+                session,
+                owner,
+                repo,
+                pull_number,
+                state_comment_id,
+                records,
+            )
+            print(f"[P3] Lifecycle state saved in PR issue comment id={saved_comment_id}")
             comparison["records"] = records
             return comparison

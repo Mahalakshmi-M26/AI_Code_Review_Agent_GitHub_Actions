@@ -179,11 +179,11 @@ def record(finding_id: str, title: str, status: str = "open") -> dict:
     }
 
 
-def state_comment(comment_id: int, records: list[dict]) -> dict:
+def state_comment(comment_id: int, records: list[dict], author: str = "github-actions[bot]") -> dict:
     return {
         "id": comment_id,
         "body": encode_lifecycle_state("octo/demo", 12, records),
-        "user": {"login": "github-actions[bot]"},
+        "user": {"login": author},
     }
 
 
@@ -381,6 +381,43 @@ def test_reconcile_resolves_only_missing_finding_thread(monkeypatch):
         ("pull_request_review_write", "resolve_thread"),
     ]
     assert not any(name in {"add_issue_comment", "update_issue_comment"} for name, _ in calls)
+
+
+def test_reconcile_loads_pat_authored_state_and_resolves_removed_findings(monkeypatch, capsys):
+    calls = []
+    previous = [
+        {**record("REMOVED", "Removed finding"), "thread_id": "thread-removed"},
+        {**record("CURRENT", "Current finding"), "thread_id": "thread-current"},
+    ]
+    comments = [state_comment(91, previous, author="Mahalakshmi-M26")]
+    threads = [
+        review_thread("thread-removed", "old removed"),
+        review_thread("thread-current", "still present"),
+    ]
+
+    def responder(name, arguments):
+        if arguments.get("method") == "get_comments":
+            return mcp_payload(comments)
+        if arguments.get("method") == "get_review_comments":
+            return mcp_payload({"review_threads": threads, "pageInfo": {"hasNextPage": False}})
+        return mcp_json_text({"message": "ok"})
+
+    install_fake_lifecycle_mcp(monkeypatch, responder, calls)
+    manager = GitHubMCPFindingLifecycle(GitHubMCPProvider(token="test-token"))
+
+    compared = asyncio.run(manager.reconcile(
+        "octo", "demo", 12, "new-head", [record("CURRENT", "Current finding")], ["src/app.py"],
+    ))
+
+    assert [item["finding_id"] for item in compared["existing_findings"]] == ["CURRENT"]
+    assert [item["finding_id"] for item in compared["resolved_findings"]] == ["REMOVED"]
+    assert compared["resolved_findings"][0]["thread_id"] == "thread-removed"
+    output = capsys.readouterr().out
+    assert "[P3] Lifecycle state location: PR issue comment octo/demo#12" in output
+    assert "[P3] Loaded lifecycle state comment id=91 finding_count=2" in output
+    assert "[P3] Loaded lifecycle finding IDs: ['REMOVED', 'CURRENT']" in output
+    assert "[P3] Previous findings: 2" in output
+    assert "[P3] Previous finding IDs: ['REMOVED', 'CURRENT']" in output
 
 
 def test_reconcile_continues_and_persists_retryable_state_when_resolve_fails(monkeypatch, capsys):
@@ -649,7 +686,7 @@ def test_open_finding_without_thread_is_retried_as_new(monkeypatch):
     assert not any(name in {"add_issue_comment", "update_issue_comment"} for name, _ in calls)
 
 
-def test_finalize_persists_new_thread_id(monkeypatch):
+def test_finalize_persists_new_thread_id(monkeypatch, capsys):
     calls = []
     threads = [review_thread(
         "thread-new",
@@ -675,6 +712,10 @@ def test_finalize_persists_new_thread_id(monkeypatch):
     assert calls[-1][0] == "update_issue_comment"
     saved = json.loads(calls[-1][1]["body"].split("\n", 1)[1].rsplit("\n-->", 1)[0])
     assert saved["findings"][0]["thread_id"] == "thread-new"
+    output = capsys.readouterr().out
+    assert "[P3] Lifecycle state location: PR issue comment octo/demo#12" in output
+    assert "[P3] Saved lifecycle finding IDs: ['D']" in output
+    assert "[P3] Lifecycle state saved in PR issue comment id=91" in output
 
 
 def test_finalize_matches_mcp_author_and_resolves_thread(monkeypatch, capsys):
