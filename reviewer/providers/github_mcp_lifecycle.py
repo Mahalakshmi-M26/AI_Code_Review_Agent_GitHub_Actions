@@ -17,6 +17,10 @@ from reviewer.providers.github_mcp import GitHubMCPProvider
 from reviewer.review import extract_finding_id_marker
 
 
+class MCPToolError(RuntimeError):
+    """An MCP tool returned an error result."""
+
+
 class GitHubMCPFindingLifecycle:
     """Persist finding identity and reconcile review threads using GitHub MCP."""
 
@@ -112,8 +116,10 @@ class GitHubMCPFindingLifecycle:
             method = arguments.get("method", tool_name)
             print("[MCP ERROR] Tool response:")
             print(repr(result))
+            error_detail: Any = None
             try:
                 content = self.provider._result_content(result)
+                error_detail = content
                 print("[MCP ERROR] Result content:")
                 print(content)
                 print("[MCP ERROR] Decoded payload:")
@@ -124,7 +130,8 @@ class GitHubMCPFindingLifecycle:
             except Exception as content_error:
                 print("[MCP ERROR] Result content unavailable:")
                 print(f"{type(content_error).__name__}: {content_error}")
-            raise RuntimeError(f"MCP {tool_name} ({method}) returned a tool error.")
+            detail = f": {error_detail}" if error_detail is not None else "."
+            raise MCPToolError(f"MCP {tool_name} ({method}) returned a tool error{detail}")
         return result
 
     def _payload(self, result: Any, label: str) -> Any:
@@ -474,7 +481,29 @@ class GitHubMCPFindingLifecycle:
                 thread = threads_by_id.get(str(thread_id)) if thread_id else None
                 if thread is not None and not self._thread_resolved(thread):
                     print(f"[P3] MCP resolve_thread {thread_id}")
-                    await self._set_thread_resolution(session, owner, repo, pull_number, str(thread_id), True)
+                    try:
+                        await self._set_thread_resolution(
+                            session,
+                            owner,
+                            repo,
+                            pull_number,
+                            str(thread_id),
+                            True,
+                        )
+                    except MCPToolError as exc:
+                        print(
+                            f"[P3] WARNING: Failed to resolve thread "
+                            f"{thread_id}. Continuing. Error={exc}"
+                        )
+                        record = records_by_id.get(str(finding.get("finding_id")))
+                        if record is not None:
+                            record["status"] = "open"
+                            record["thread_resolution_pending"] = True
+                        continue
+
+                record = records_by_id.get(str(finding.get("finding_id")))
+                if record is not None:
+                    record.pop("thread_resolution_pending", None)
 
             for finding in comparison["existing_findings"]:
                 print(

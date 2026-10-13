@@ -383,6 +383,81 @@ def test_reconcile_resolves_only_missing_finding_thread(monkeypatch):
     assert not any(name in {"add_issue_comment", "update_issue_comment"} for name, _ in calls)
 
 
+def test_reconcile_continues_and_persists_retryable_state_when_resolve_fails(monkeypatch, capsys):
+    calls = []
+    previous = [record("A", "A")]
+    comments = [state_comment(91, previous)]
+    threads = [review_thread("thread-A", "old A")]
+
+    def responder(name, arguments):
+        if arguments.get("method") == "get_comments":
+            return mcp_payload(comments)
+        if arguments.get("method") == "get_review_comments":
+            return mcp_payload({"review_threads": threads, "pageInfo": {"hasNextPage": False}})
+        if name == "pull_request_review_write" and arguments.get("method") == "resolve_thread":
+            return CallToolResult(
+                content=[TextContent(type="text", text="Resource not accessible by integration")],
+                is_error=True,
+            )
+        return mcp_json_text({"message": "ok"})
+
+    install_fake_lifecycle_mcp(monkeypatch, responder, calls)
+    manager = GitHubMCPFindingLifecycle(GitHubMCPProvider(token="test-token"))
+
+    compared = asyncio.run(manager.reconcile(
+        "octo", "demo", 12, "new-head", [], ["src/app.py"],
+    ))
+
+    assert [item["finding_id"] for item in compared["resolved_findings"]] == ["A"]
+    assert compared["records"][0]["status"] == "open"
+    assert compared["records"][0]["thread_resolution_pending"] is True
+    assert [(name, args["method"]) for name, args in calls if name == "pull_request_review_write"] == [
+        ("pull_request_review_write", "resolve_thread"),
+    ]
+
+    asyncio.run(manager.finalize("octo", "demo", 12, compared))
+    state_update = next(
+        arguments for name, arguments in calls if name == "update_issue_comment"
+    )
+    saved_records = decode_lifecycle_state(state_update["body"], "octo/demo", 12)
+    assert saved_records is not None
+    assert saved_records[0]["status"] == "open"
+    assert saved_records[0]["thread_resolution_pending"] is True
+
+    output = capsys.readouterr().out
+    assert "[P3] WARNING: Failed to resolve thread thread-A. Continuing." in output
+    assert "Resource not accessible by integration" in output
+
+
+def test_reconcile_does_not_suppress_unrelated_mcp_tool_errors(monkeypatch):
+    calls = []
+    comments = [state_comment(91, [record("A", "A")])]
+
+    def responder(name, arguments):
+        if arguments.get("method") == "get_comments":
+            return mcp_payload(comments)
+        if arguments.get("method") == "get_review_comments":
+            return CallToolResult(
+                content=[TextContent(type="text", text="review-thread read denied")],
+                is_error=True,
+            )
+        return mcp_json_text({"message": "ok"})
+
+    install_fake_lifecycle_mcp(monkeypatch, responder, calls)
+    manager = GitHubMCPFindingLifecycle(GitHubMCPProvider(token="test-token"))
+
+    with pytest.raises(ExceptionGroup) as error_group:
+        asyncio.run(manager.reconcile(
+            "octo", "demo", 12, "new-head", [], ["src/app.py"],
+        ))
+    assert any(
+        isinstance(error, RuntimeError)
+        and "get_review_comments" in str(error)
+        and "tool error" in str(error)
+        for error in error_group.value.exceptions
+    )
+
+
 def test_reconcile_backfills_legacy_thread_before_resolving(monkeypatch, capsys):
     calls = []
     finding_id = "legacy-finding"
