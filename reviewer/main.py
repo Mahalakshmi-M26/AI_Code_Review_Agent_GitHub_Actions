@@ -174,6 +174,34 @@ def main() -> None:
     event = load_event()
     pr_context = ensure_pr_context(event)
     repo_owner, repo_name = pr_context["repo_slug"].split("/", 1)
+    event_name = os.getenv("GITHUB_EVENT_NAME", "unknown")
+
+    head_repo = (
+        event.get("pull_request", {})
+        .get("head", {})
+        .get("repo", {})
+        .get("full_name")
+    )
+
+    base_repo = (
+        event.get("pull_request", {})
+        .get("base", {})
+        .get("repo", {})
+        .get("full_name")
+    )
+
+    is_fork = head_repo != base_repo
+
+    print("[AUTH DEBUG]")
+    print(f"event={event_name}")
+    print(f"repository={pr_context['repo_slug']}")
+    print(f"base_repo={base_repo}")
+    print(f"head_repo={head_repo}")
+    print(f"is_fork={is_fork}")
+
+    token = os.getenv("GITHUB_TOKEN")
+    print(f"token_present={bool(token)}")
+    print(f"token_length={len(token) if token else 0}")
 
     print("[CONTEXT] Repository:")
     print(pr_context["repo_slug"])
