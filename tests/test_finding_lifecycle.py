@@ -500,6 +500,40 @@ def test_unchanged_context_finding_stays_existing_when_neighbor_is_changed(capsy
     assert "reviewed_scope='not_changed'" in capsys.readouterr().out
 
 
+def test_removed_wildcard_import_resolves_previous_finding(capsys):
+    prompt_diff = (
+        "FILE: src/main/java/example/App.java\n"
+        "@@ -8 +0,0 @@\n"
+        "-import org.springframework.web.bind.annotation.*;\n"
+    )
+    line_scope = build_reviewed_line_scope_from_prompt_diff(prompt_diff)
+    previous = {
+        **record("WILDCARD", "Avoid wildcard imports"),
+        "file": "src/main/java/example/App.java",
+        "line": 8,
+    }
+
+    compared = compare_findings(
+        [previous],
+        [],
+        repository="octo/demo",
+        pr_number=12,
+        head_sha="new-head",
+        reviewed_files=["src/main/java/example/App.java"],
+        reviewed_line_scope=line_scope,
+    )
+
+    assert line_scope[previous["file"]] == {8}
+    assert [item["title"] for item in compared["resolved_findings"]] == [
+        "Avoid wildcard imports"
+    ]
+    assert compared["existing_findings"] == []
+    output = capsys.readouterr().out
+    assert "[P3] PREVIOUS_FINDING finding_id='WILDCARD' line=8" in output
+    assert "[P3] SCOPE_CHECK line=8 in_scope=True" in output
+    assert "changed_old_line=True" in output
+
+
 def test_resolved_finding_returning_is_existing_and_reopened():
     current = {**record("A", "A"), "thread_id": "thread-A"}
     compared = compare_findings(

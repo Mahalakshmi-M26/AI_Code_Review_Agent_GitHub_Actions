@@ -278,10 +278,21 @@ def compare_findings(
         record["head_sha"] = head_sha
         file_path = normalize_file_path(str(record.get("file", "")))
         previous_line = record.get("line")
+        print(
+            f"[P3] PREVIOUS_FINDING finding_id={finding_id!r} "
+            f"line={previous_line!r} file={file_path!r}"
+        )
         in_review_scope = file_path in reviewed
         line_was_changed = (
             isinstance(previous_line, int)
             and previous_line in line_scope.get(file_path, set())
+        )
+        print(
+            f"[P3] SCOPE_CHECK line={previous_line!r} "
+            f"in_scope={in_review_scope and line_was_changed} "
+            f"file_reviewed={in_review_scope} "
+            f"changed_old_line={line_was_changed} "
+            f"changed_old_lines={sorted(line_scope.get(file_path, set()))}"
         )
         reviewed_scope = (
             "outside_review_scope"

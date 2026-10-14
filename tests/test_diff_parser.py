@@ -123,6 +123,25 @@ def test_reviewed_line_scope_uses_old_coordinates_after_insertion():
     }
 
 
+def test_removed_wildcard_import_enters_reviewed_old_line_scope(capsys):
+    filtered = filter_changed_files([{
+        "filename": "src/main/java/example/App.java",
+        "patch": (
+            "@@ -8,1 +7,0 @@\n"
+            "-import org.springframework.web.bind.annotation.*;\n"
+        ),
+    }])
+
+    scope = build_reviewed_line_scope_from_prompt_diff(filtered["diff_text"])
+
+    assert scope == {
+        "src/main/java/example/App.java": {8},
+    }
+    output = capsys.readouterr().out
+    assert "[P3] IMPORT_DELETION line=8 in_scope=true" in output
+    assert "[P3] REVIEW_SCOPE file='src/main/java/example/App.java' parsed_old_lines=[8]" in output
+
+
 def test_invalid_model_line_is_rejected_to_null():
     result = make_result([finding(line=999), finding(file="other.py", line=8)])
     line_map = {"demo.py": [{"line": 8, "content": "safe = True"}]}

@@ -21,7 +21,11 @@ from reviewer.review import (
     validate_result,
     validate_finding_lines,
 )
-from reviewer.finding_lifecycle import append_lifecycle_summary, build_finding_records
+from reviewer.finding_lifecycle import (
+    append_lifecycle_summary,
+    build_finding_records,
+    normalize_file_path,
+)
 from reviewer.providers.github_mcp import GitHubMCPProvider
 from reviewer.providers.github_mcp_lifecycle import GitHubMCPFindingLifecycle
 
@@ -401,6 +405,22 @@ def main() -> None:
     complete_file_selection = len(filtered["files_reviewed"]) + len(filtered["files_skipped"]) == len(files_payload)
     lifecycle_reviewed_files = filtered["files_reviewed"] if complete_diff and complete_file_selection else []
     lifecycle_reviewed_line_scope = reviewed_line_scope if complete_diff and complete_file_selection else {}
+    parsed_scope_by_path = {
+        normalize_file_path(file_path): lines
+        for file_path, lines in reviewed_line_scope.items()
+    }
+    effective_scope_by_path = {
+        normalize_file_path(file_path): lines
+        for file_path, lines in lifecycle_reviewed_line_scope.items()
+    }
+    for file_path in filtered["files_reviewed"]:
+        normalized_path = normalize_file_path(file_path)
+        print(
+            f"[P3] REVIEW_SCOPE file={file_path!r} "
+            f"changed_old_lines={sorted(effective_scope_by_path.get(normalized_path, set()))} "
+            f"parsed_old_lines={sorted(parsed_scope_by_path.get(normalized_path, set()))} "
+            f"complete_diff={complete_diff} complete_file_selection={complete_file_selection}"
+        )
     post_review_with_lifecycle(
         github_provider,
         lifecycle_provider,
