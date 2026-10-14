@@ -4,6 +4,7 @@ import json
 import pytest
 from mcp.types import CallToolResult, TextContent
 
+from reviewer.diff_parser import build_reviewed_line_scope_from_prompt_diff
 from reviewer.finding_lifecycle import (
     append_lifecycle_summary,
     build_finding_records,
@@ -397,7 +398,7 @@ def test_seven_previous_three_current_resolves_only_finding_in_delete_employee_d
         pr_number=12,
         head_sha="new-head",
         reviewed_files=["src/employee.py"],
-        reviewed_line_scope={"src/employee.py": {18, 19, 20}},
+        reviewed_line_scope={"src/employee.py": {19}},
     )
 
     assert len(previous) == 7
@@ -411,10 +412,12 @@ def test_seven_previous_three_current_resolves_only_finding_in_delete_employee_d
         for line in (8, 25, 30, 40)
     )
     output = capsys.readouterr().out
-    assert "file='src/employee.py' line=19 in_current_diff=True reviewed_by_ai=True" in output
-    assert "resolution_decision=resolved: location was re-evaluated and finding is absent" in output
-    assert "file='src/employee.py' line=25 in_current_diff=False reviewed_by_ai=False" in output
-    assert "resolution_decision=kept existing: location was not re-evaluated" in output
+    assert "saved_file='src/employee.py' reviewed_scope='changed_old_line'" in output
+    assert "saved_line=19" in output
+    assert "reason=fixed" in output
+    assert "saved_line=25" in output
+    assert "reviewed_scope='not_changed'" in output
+    assert "reason=not_re_evaluated" in output
 
 
 def test_comparison_logs_duplicate_identity_discard(capsys):
@@ -470,6 +473,31 @@ def test_resolve_unreviewed_override_cannot_resolve_without_ai_line_scope(capsys
     assert compared["existing_findings"][0]["evaluation_status"] == "not_re_evaluated"
     assert compared["records"][0]["status"] == "open"
     assert "resolve_unreviewed override ignored for resolution" in capsys.readouterr().out
+
+
+def test_unchanged_context_finding_stays_existing_when_neighbor_is_changed(capsys):
+    prompt_diff = (
+        "FILE: src/app.py\n"
+        "@@ -18,3 +18,3 @@ update\n"
+        " unchanged line with prior finding\n"
+        "-old changed line\n"
+        "+new changed line\n"
+        " unchanged line after\n"
+    )
+    compared = compare_findings(
+        [{**record("CONTEXT", "Unchanged context finding"), "line": 18}],
+        [],
+        repository="octo/demo",
+        pr_number=12,
+        head_sha="new-head",
+        reviewed_files=["src/app.py"],
+        reviewed_line_scope=build_reviewed_line_scope_from_prompt_diff(prompt_diff),
+    )
+
+    assert compared["resolved_findings"] == []
+    assert compared["existing_findings"][0]["finding_id"] == "CONTEXT"
+    assert compared["existing_findings"][0]["evaluation_status"] == "not_re_evaluated"
+    assert "reviewed_scope='not_changed'" in capsys.readouterr().out
 
 
 def test_resolved_finding_returning_is_existing_and_reopened():

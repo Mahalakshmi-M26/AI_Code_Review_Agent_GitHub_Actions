@@ -92,7 +92,7 @@ def test_changed_line_extraction_handles_multiple_hunks():
     ]
 
 
-def test_reviewed_line_scope_includes_old_new_and_context_lines():
+def test_reviewed_line_scope_includes_changed_old_lines_only():
     prompt_diff = (
         "FILE: src/employee.py\n"
         "@@ -18,4 +18,3 @@ deleteEmployee\n"
@@ -103,7 +103,23 @@ def test_reviewed_line_scope_includes_old_new_and_context_lines():
     )
 
     assert build_reviewed_line_scope_from_prompt_diff(prompt_diff) == {
-        "src/employee.py": {18, 19, 20},
+        "src/employee.py": {19},
+    }
+
+
+def test_reviewed_line_scope_uses_old_coordinates_after_insertion():
+    prompt_diff = (
+        "FILE: src/employee.py\n"
+        "@@ -10,3 +10,4 @@ update\n"
+        "+inserted line\n"
+        " context before changed line\n"
+        "-old changed line\n"
+        "+new changed line\n"
+        " context after\n"
+    )
+
+    assert build_reviewed_line_scope_from_prompt_diff(prompt_diff) == {
+        "src/employee.py": {11},
     }
 
 

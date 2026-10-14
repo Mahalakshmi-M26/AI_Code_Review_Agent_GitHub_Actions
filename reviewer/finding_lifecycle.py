@@ -278,28 +278,41 @@ def compare_findings(
         record["head_sha"] = head_sha
         file_path = normalize_file_path(str(record.get("file", "")))
         previous_line = record.get("line")
-        in_review_scope = (
-            file_path in reviewed
-            and isinstance(previous_line, int)
+        in_review_scope = file_path in reviewed
+        line_was_changed = (
+            isinstance(previous_line, int)
             and previous_line in line_scope.get(file_path, set())
         )
-        reviewed_by_ai = in_review_scope
-        if record.get("status") == "open" and reviewed_by_ai:
+        reviewed_scope = (
+            "outside_review_scope"
+            if not in_review_scope
+            else "changed_old_line"
+            if line_was_changed
+            else "not_changed"
+        )
+        if record.get("status") == "open" and in_review_scope and line_was_changed:
             record["status"] = "resolved"
             resolved_findings.append(record)
-            decision = "resolved: location was re-evaluated and finding is absent"
+            reason = "fixed"
         elif record.get("status") == "open":
-            decision = "kept existing: location was not re-evaluated"
+            reason = "outside_review_scope" if not in_review_scope else "not_re_evaluated"
             existing_record = dict(record)
             existing_record["evaluation_status"] = "not_re_evaluated"
             existing_findings.append(existing_record)
         else:
-            decision = f"preserved prior status={record.get('status')!r}"
+            reason = "missing_from_ai_output"
+        print(
+            f"[P3] RESOLUTION_DECISION title={record.get('title')!r} "
+            f"finding_id={finding_id!r} saved_line={previous_line!r} "
+            f"saved_file={file_path!r} reviewed_scope={reviewed_scope!r} "
+            f"current_match='missing_from_ai_output' reason={reason}"
+        )
         print(
             f"[P3] Resolution scope previous finding_id={finding_id!r} "
             f"title={record.get('title')!r} file={file_path!r} line={previous_line!r} "
-            f"in_current_diff={in_review_scope} reviewed_by_ai={reviewed_by_ai} "
-            f"resolution_decision={decision}"
+            f"in_current_diff={in_review_scope and line_was_changed} "
+            f"changed_old_line={line_was_changed} "
+            f"resolution_reason={reason}"
         )
         records[finding_id] = record
 

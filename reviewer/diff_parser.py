@@ -67,7 +67,7 @@ def build_changed_line_map_from_prompt_diff(diff_text: str) -> dict[str, list[di
 
 
 def parse_unified_diff_review_scope(patch: str) -> set[int]:
-    """Return old/new line numbers represented in diff hunks sent to the model."""
+    """Return changed old-side line numbers, excluding additions and context."""
     reviewed_lines: set[int] = set()
     old_line: int | None = None
     new_line: int | None = None
@@ -84,14 +84,11 @@ def parse_unified_diff_review_scope(patch: str) -> set[int]:
         if diff_line.startswith(("+++", "---")):
             continue
         if diff_line.startswith("+"):
-            reviewed_lines.add(new_line)
             new_line += 1
         elif diff_line.startswith("-"):
             reviewed_lines.add(old_line)
             old_line += 1
         elif diff_line.startswith(" "):
-            reviewed_lines.add(old_line)
-            reviewed_lines.add(new_line)
             old_line += 1
             new_line += 1
 
@@ -99,7 +96,7 @@ def parse_unified_diff_review_scope(patch: str) -> set[int]:
 
 
 def build_reviewed_line_scope_from_prompt_diff(diff_text: str) -> dict[str, set[int]]:
-    """Map each file to old/new line numbers actually represented in bounded prompt diff."""
+    """Map each file to changed old-side line numbers in the bounded prompt diff."""
     headers = list(FILE_HEADER.finditer(diff_text))
     scope: dict[str, set[int]] = {}
     for index, header in enumerate(headers):
