@@ -4,6 +4,7 @@ from reviewer.diff_parser import (
     parse_unified_diff,
 )
 from reviewer.models import ReviewResult
+from reviewer.providers.github_mcp import GitHubMCPProvider
 from reviewer.review import (
     build_github_review_payload,
     build_review_prompt,
@@ -124,13 +125,16 @@ def test_reviewed_line_scope_uses_old_coordinates_after_insertion():
 
 
 def test_removed_wildcard_import_enters_reviewed_old_line_scope(capsys):
-    filtered = filter_changed_files([{
-        "filename": "src/main/java/example/App.java",
-        "patch": (
-            "@@ -8,1 +7,0 @@\n"
-            "-import org.springframework.web.bind.annotation.*;\n"
-        ),
-    }])
+    full_diff = (
+        "diff --git a/src/main/java/example/App.java b/src/main/java/example/App.java\n"
+        "index 1234567..89abcde 100644\n"
+        "--- a/src/main/java/example/App.java\n"
+        "+++ b/src/main/java/example/App.java\n"
+        "@@ -8,1 +7,0 @@\n"
+        "-import org.springframework.web.bind.annotation.*;\n"
+    )
+    normalized_files = GitHubMCPProvider._parse_unified_diff(full_diff)
+    filtered = filter_changed_files(normalized_files)
 
     scope = build_reviewed_line_scope_from_prompt_diff(filtered["diff_text"])
 

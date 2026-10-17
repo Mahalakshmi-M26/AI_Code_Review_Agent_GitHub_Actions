@@ -12,6 +12,7 @@ from reviewer.finding_lifecycle import (
     decode_lifecycle_state,
     encode_lifecycle_state,
     finding_fingerprint,
+    _legacy_finding_fingerprint,
 )
 from reviewer.models import ReviewResult
 from reviewer.providers.github_mcp import GitHubMCPProvider
@@ -222,6 +223,92 @@ def test_fingerprint_uses_code_location_and_comparison_matches_line_shifts():
     assert len(compared["existing_findings"]) == 1
     assert compared["new_findings"] == []
     assert compared["resolved_findings"] == []
+
+
+def test_legacy_fingerprint_matches_and_migrates_to_current_id(capsys):
+    legacy_finding = finding(
+        "Wildcard import from org.springframework.web.bind.annotation",
+        8,
+        "import org.springframework.web.bind.annotation.*;",
+    )
+    old_finding_id = _legacy_finding_fingerprint(legacy_finding)
+    current_finding_id = finding_fingerprint(
+        legacy_finding,
+        legacy_finding["code_context"],
+    )
+    assert old_finding_id is not None
+    assert old_finding_id != current_finding_id
+
+    previous = {
+        **record(old_finding_id, legacy_finding["title"]),
+        **legacy_finding,
+        "finding_id": old_finding_id,
+        "code_context": legacy_finding["code_context"],
+        "thread_id": "thread-legacy-wildcard",
+    }
+    current = {
+        **legacy_finding,
+        "finding_id": current_finding_id,
+        "code_context": legacy_finding["code_context"],
+    }
+
+    compared = compare_findings(
+        [previous],
+        [current],
+        repository="octo/demo",
+        pr_number=12,
+        head_sha="new-head",
+        reviewed_files=["src/app.py"],
+    )
+
+    assert compared["new_findings"] == []
+    assert compared["resolved_findings"] == []
+    assert len(compared["existing_findings"]) == 1
+    assert compared["existing_findings"][0]["finding_id"] == current_finding_id
+    assert compared["existing_findings"][0]["fingerprint_version"] == 2
+    assert compared["existing_findings"][0]["thread_id"] == "thread-legacy-wildcard"
+    output = capsys.readouterr().out
+    assert "match result=legacy_fingerprint" in output
+    assert f"old_finding_id={old_finding_id!r}" in output
+    assert f"stable_location_score=0" in output
+    assert "legacy_fingerprint_match=True" in output
+
+
+def test_resolved_legacy_fingerprint_record_is_migrated(capsys):
+    old_finding = finding(
+        "Wildcard import from org.springframework.web.bind.annotation",
+        8,
+        "import org.springframework.web.bind.annotation.*;",
+    )
+    old_finding_id = _legacy_finding_fingerprint(old_finding)
+    current_finding_id = finding_fingerprint(old_finding, old_finding["code_context"])
+    assert old_finding_id is not None
+    assert old_finding_id != current_finding_id
+    previous = {
+        **record(old_finding_id, old_finding["title"]),
+        **old_finding,
+        "finding_id": old_finding_id,
+        "code_context": old_finding["code_context"],
+    }
+
+    compared = compare_findings(
+        [previous],
+        [],
+        repository="octo/demo",
+        pr_number=12,
+        head_sha="new-head",
+        reviewed_files=["src/app.py"],
+        reviewed_line_scope={"src/app.py": {8}},
+    )
+
+    assert [item["finding_id"] for item in compared["resolved_findings"]] == [
+        current_finding_id
+    ]
+    assert compared["records"][0]["finding_id"] == current_finding_id
+    assert compared["records"][0]["fingerprint_version"] == 2
+    output = capsys.readouterr().out
+    assert f"old_finding_id={old_finding_id!r}" in output
+    assert f"migrated_finding_id={current_finding_id!r}" in output
 
 
 def test_title_wording_changes_keep_finding_existing():

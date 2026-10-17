@@ -6,6 +6,7 @@ venv/
 *.pyc
 *.pyo
 docs/*
-!docs/
-!docs/*.md
-!docs/ai-code-review-agent-final-demo.pptx
+docs
+# !docs/
+# !docs/*.md
+# !docs/ai-code-review-agent-final-demo.pptx

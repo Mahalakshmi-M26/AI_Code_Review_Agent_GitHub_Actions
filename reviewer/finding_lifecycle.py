@@ -13,6 +13,7 @@ from .review import build_inline_review_comments
 
 STATE_MARKER = "<!-- ai-review-finding-lifecycle:v1\n"
 STATE_END_MARKER = "\n-->"
+CURRENT_FINGERPRINT_VERSION = 2
 
 
 def normalize_file_path(value: str) -> str:
@@ -57,6 +58,21 @@ def finding_fingerprint(
         f"severity={normalized_severity!r} line={line!r} "
         f"location={location!r} title={str(get_value('title'))!r}"
     )
+    return hashlib.sha256(identity.encode("utf-8")).hexdigest()
+
+
+def _legacy_finding_fingerprint(record: dict[str, Any]) -> str | None:
+    """Recreate the original title/context fingerprint for stored v1 records."""
+    required = ("file", "category", "severity", "title")
+    if any(key not in record for key in required):
+        return None
+    identity = "\x1f".join((
+        normalize_file_path(str(record["file"])),
+        normalize_text(str(record["category"])),
+        normalize_text(str(record["severity"])),
+        normalize_text(str(record["title"])),
+        normalize_code_context(str(record.get("code_context") or "")),
+    ))
     return hashlib.sha256(identity.encode("utf-8")).hexdigest()
 
 
@@ -143,6 +159,7 @@ def build_finding_records(
         comments = build_inline_review_comments(single_finding_result, changed_line_map, [finding_id])
         records.append({
             "finding_id": finding_id,
+            "fingerprint_version": CURRENT_FINGERPRINT_VERSION,
             "thread_id": None,
             "status": "open",
             "file": normalize_file_path(finding.file),
@@ -221,12 +238,36 @@ def compare_findings(
         previous = prior_by_id.get(finding_id)
         match_reason = "finding_id" if previous is not None else "none"
         if previous is None:
-            candidates = [
-                (score, previous_id, candidate)
-                for previous_id, candidate in prior_by_id.items()
-                if previous_id not in matched_previous_ids
-                if (score := _finding_location_score(candidate, current)) is not None
-            ]
+            candidates: list[tuple[int, str, dict[str, Any]]] = []
+            legacy_matches: set[str] = set()
+            for previous_id, candidate in prior_by_id.items():
+                if previous_id in matched_previous_ids:
+                    continue
+                if normalize_file_path(str(candidate.get("file") or "")) != normalize_file_path(
+                    str(current.get("file") or "")
+                ):
+                    continue
+                score = _finding_location_score(candidate, current)
+                old_legacy_id = _legacy_finding_fingerprint(candidate)
+                current_legacy_id = _legacy_finding_fingerprint(current)
+                legacy_match = (
+                    candidate.get("fingerprint_version", 1) == 1
+                    and old_legacy_id == previous_id
+                    and current_legacy_id == previous_id
+                )
+                print(
+                    f"[P3] FINGERPRINT_COMPATIBILITY old_finding_id={previous_id!r} "
+                    f"old_title={candidate.get('title')!r} old_line={candidate.get('line')!r} "
+                    f"new_candidate_title={current.get('title')!r} "
+                    f"new_candidate_line={current.get('line')!r} "
+                    f"stable_location_score={score!r} "
+                    f"legacy_fingerprint_match={legacy_match}"
+                )
+                if legacy_match:
+                    candidates.append((-1, previous_id, candidate))
+                    legacy_matches.add(previous_id)
+                elif score is not None:
+                    candidates.append((score, previous_id, candidate))
             if candidates:
                 best_score = min(score for score, _, _ in candidates)
                 best_candidates = [item for item in candidates if item[0] == best_score]
@@ -235,7 +276,11 @@ def compare_findings(
             if len(best_candidates) == 1:
                 _, previous_id, previous = best_candidates[0]
                 matched_previous_ids.add(previous_id)
-                match_reason = "stable_location"
+                match_reason = (
+                    "legacy_fingerprint"
+                    if previous_id in legacy_matches
+                    else "stable_location"
+                )
             elif best_candidates:
                 print(
                     f"[P3] Finding identity ambiguous finding_id={finding_id} "
@@ -258,11 +303,14 @@ def compare_findings(
             **(previous or {}),
             **current,
             "finding_id": finding_id,
+            "fingerprint_version": CURRENT_FINGERPRINT_VERSION,
             "repository": repository,
             "pr_number": pr_number,
             "head_sha": head_sha,
             "status": "open",
         }
+        if previous is not None and not current.get("thread_id") and previous.get("thread_id"):
+            record["thread_id"] = previous["thread_id"]
         if previous is None:
             new_findings.append(record)
         else:
@@ -276,6 +324,25 @@ def compare_findings(
             continue
         record = dict(previous)
         record["head_sha"] = head_sha
+        migrated_finding_id = finding_id
+        legacy_fingerprint = _legacy_finding_fingerprint(record)
+        if (
+            record.get("fingerprint_version", 1) == 1
+            and legacy_fingerprint == finding_id
+        ):
+            migrated_finding_id = finding_fingerprint(
+                record,
+                str(record.get("code_context") or ""),
+            )
+            record["finding_id"] = migrated_finding_id
+            record["fingerprint_version"] = CURRENT_FINGERPRINT_VERSION
+            print(
+                f"[P3] FINGERPRINT_COMPATIBILITY old_finding_id={finding_id!r} "
+                f"old_title={record.get('title')!r} old_line={record.get('line')!r} "
+                "new_candidate_title=None new_candidate_line=None "
+                "stable_location_score=None legacy_fingerprint_match=True "
+                f"migrated_finding_id={migrated_finding_id!r}"
+            )
         file_path = normalize_file_path(str(record.get("file", "")))
         previous_line = record.get("line")
         print(
@@ -325,7 +392,7 @@ def compare_findings(
             f"changed_old_line={line_was_changed} "
             f"resolution_reason={reason}"
         )
-        records[finding_id] = record
+        records[migrated_finding_id] = record
 
     return {
         "records": list(records.values()),
