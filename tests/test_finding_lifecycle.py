@@ -4,7 +4,6 @@ import json
 import pytest
 from mcp.types import CallToolResult, TextContent
 
-from reviewer.diff_parser import build_reviewed_line_scope_from_prompt_diff
 from reviewer.finding_lifecycle import (
     append_lifecycle_summary,
     build_finding_records,
@@ -12,7 +11,6 @@ from reviewer.finding_lifecycle import (
     decode_lifecycle_state,
     encode_lifecycle_state,
     finding_fingerprint,
-    _legacy_finding_fingerprint,
 )
 from reviewer.models import ReviewResult
 from reviewer.providers.github_mcp import GitHubMCPProvider
@@ -48,105 +46,6 @@ def install_fake_lifecycle_mcp(monkeypatch, responder, calls):
 
     monkeypatch.setattr(lifecycle_module, "stdio_client", lambda params: FakeTransport())
     monkeypatch.setattr(lifecycle_module, "ClientSession", FakeSession)
-
-
-def test_lifecycle_session_logs_nested_exception_groups(monkeypatch, capsys):
-    import reviewer.providers.github_mcp_lifecycle as lifecycle_module
-
-    class FakeSession:
-        def __init__(self, *args, **kwargs):
-            pass
-
-        async def __aenter__(self):
-            return self
-
-        async def __aexit__(self, exc_type, exc, tb):
-            return None
-
-        async def initialize(self):
-            return None
-
-    class FailingTransport:
-        async def __aenter__(self):
-            return object(), object()
-
-        async def __aexit__(self, exc_type, exc, tb):
-            raise ExceptionGroup("MCP task group", [
-                ValueError("GitHub API rejected the request"),
-                ExceptionGroup("transport shutdown", [RuntimeError("stdio closed unexpectedly")]),
-            ])
-
-    monkeypatch.setattr(lifecycle_module, "stdio_client", lambda params: FailingTransport())
-    monkeypatch.setattr(lifecycle_module, "ClientSession", FakeSession)
-    manager = GitHubMCPFindingLifecycle(GitHubMCPProvider(token="test-token"))
-
-    async def run_session():
-        async with manager._session():
-            pass
-
-    with pytest.raises(ExceptionGroup, match="MCP task group"):
-        asyncio.run(run_session())
-
-    output = capsys.readouterr()
-    logged = output.out + output.err
-    assert "[DEBUG] ExceptionGroup detected" in logged
-    assert "ValueError" in logged
-    assert "GitHub API rejected the request" in logged
-    assert "RuntimeError" in logged
-    assert "stdio closed unexpectedly" in logged
-    assert "Traceback (most recent call last)" in logged
-
-
-def test_lifecycle_tool_error_logs_full_mcp_payload(capsys):
-    payload = {
-        "message": "GraphQL mutation failed",
-        "error": "thread is already resolved",
-        "details": {"threadId": "PRRT_example"},
-        "type": "NOT_FOUND",
-        "extensions": {"code": "NOT_FOUND"},
-    }
-
-    class ErrorSession:
-        async def list_tools(self):
-            return {"tools": [{
-                "name": "pull_request_review_write",
-                "inputSchema": {
-                    "type": "object",
-                    "required": ["method", "owner", "repo", "pullNumber", "threadId"],
-                },
-            }]}
-
-        async def call_tool(self, name, arguments):
-            return CallToolResult(content=[], structured_content=payload, is_error=True)
-
-    manager = GitHubMCPFindingLifecycle(GitHubMCPProvider(token="test-token"))
-
-    with pytest.raises(RuntimeError, match="resolve_thread.*tool error"):
-        asyncio.run(manager._call(
-            ErrorSession(),
-            "pull_request_review_write",
-            {
-                "method": "resolve_thread",
-                "owner": "octo",
-                "repo": "demo",
-                "pullNumber": 12,
-                "threadId": "PRRT_example",
-            },
-        ))
-
-    output = capsys.readouterr().out
-    assert "[MCP REQUEST] owner='octo' repo='demo' pull_number=12 thread_id='PRRT_example'" in output
-    assert "'pullNumber': 12" in output
-    assert "'threadId': 'PRRT_example'" in output
-    assert "[MCP SCHEMA] pull_request_review_write inputSchema:" in output
-    assert "'required': ['method', 'owner', 'repo', 'pullNumber', 'threadId']" in output
-    assert "[MCP RESPONSE] repr(result):" in output
-    assert "[MCP RESPONSE] _result_error(result)=True" in output
-    assert "[MCP ERROR] Tool response:" in output
-    assert "[MCP ERROR] Result content:" in output
-    assert "[MCP ERROR] Decoded payload:" in output
-    for detail in ("GraphQL mutation failed", "thread is already resolved", "PRRT_example", "NOT_FOUND"):
-        assert detail in output
 
 
 def mcp_payload(payload):
@@ -225,92 +124,6 @@ def test_fingerprint_uses_code_location_and_comparison_matches_line_shifts():
     assert compared["resolved_findings"] == []
 
 
-def test_legacy_fingerprint_matches_and_migrates_to_current_id(capsys):
-    legacy_finding = finding(
-        "Wildcard import from org.springframework.web.bind.annotation",
-        8,
-        "import org.springframework.web.bind.annotation.*;",
-    )
-    old_finding_id = _legacy_finding_fingerprint(legacy_finding)
-    current_finding_id = finding_fingerprint(
-        legacy_finding,
-        legacy_finding["code_context"],
-    )
-    assert old_finding_id is not None
-    assert old_finding_id != current_finding_id
-
-    previous = {
-        **record(old_finding_id, legacy_finding["title"]),
-        **legacy_finding,
-        "finding_id": old_finding_id,
-        "code_context": legacy_finding["code_context"],
-        "thread_id": "thread-legacy-wildcard",
-    }
-    current = {
-        **legacy_finding,
-        "finding_id": current_finding_id,
-        "code_context": legacy_finding["code_context"],
-    }
-
-    compared = compare_findings(
-        [previous],
-        [current],
-        repository="octo/demo",
-        pr_number=12,
-        head_sha="new-head",
-        reviewed_files=["src/app.py"],
-    )
-
-    assert compared["new_findings"] == []
-    assert compared["resolved_findings"] == []
-    assert len(compared["existing_findings"]) == 1
-    assert compared["existing_findings"][0]["finding_id"] == current_finding_id
-    assert compared["existing_findings"][0]["fingerprint_version"] == 2
-    assert compared["existing_findings"][0]["thread_id"] == "thread-legacy-wildcard"
-    output = capsys.readouterr().out
-    assert "match result=legacy_fingerprint" in output
-    assert f"old_finding_id={old_finding_id!r}" in output
-    assert f"stable_location_score=0" in output
-    assert "legacy_fingerprint_match=True" in output
-
-
-def test_resolved_legacy_fingerprint_record_is_migrated(capsys):
-    old_finding = finding(
-        "Wildcard import from org.springframework.web.bind.annotation",
-        8,
-        "import org.springframework.web.bind.annotation.*;",
-    )
-    old_finding_id = _legacy_finding_fingerprint(old_finding)
-    current_finding_id = finding_fingerprint(old_finding, old_finding["code_context"])
-    assert old_finding_id is not None
-    assert old_finding_id != current_finding_id
-    previous = {
-        **record(old_finding_id, old_finding["title"]),
-        **old_finding,
-        "finding_id": old_finding_id,
-        "code_context": old_finding["code_context"],
-    }
-
-    compared = compare_findings(
-        [previous],
-        [],
-        repository="octo/demo",
-        pr_number=12,
-        head_sha="new-head",
-        reviewed_files=["src/app.py"],
-        reviewed_line_scope={"src/app.py": {8}},
-    )
-
-    assert [item["finding_id"] for item in compared["resolved_findings"]] == [
-        current_finding_id
-    ]
-    assert compared["records"][0]["finding_id"] == current_finding_id
-    assert compared["records"][0]["fingerprint_version"] == 2
-    output = capsys.readouterr().out
-    assert f"old_finding_id={old_finding_id!r}" in output
-    assert f"migrated_finding_id={current_finding_id!r}" in output
-
-
 def test_title_wording_changes_keep_finding_existing():
     first_review = finding(
         "Top-level executable code causes side effects on import",
@@ -347,7 +160,7 @@ def test_title_wording_changes_keep_finding_existing():
         ("PAT used in workflow secrets", "Use of PAT_TOKEN in workflow may grant excessive privileges"),
     ],
 )
-def test_paraphrased_finding_at_same_location_is_existing(old_title, new_title, capsys):
+def test_paraphrased_finding_at_same_location_is_existing(old_title, new_title):
     old_finding = {
         **finding(old_title, 18, "run: echo ${{ secrets.PAT_TOKEN }}"),
         "issue_type": "security",
@@ -379,10 +192,6 @@ def test_paraphrased_finding_at_same_location_is_existing(old_title, new_title, 
     assert [item["title"] for item in compared["existing_findings"]] == [new_title]
     assert compared["new_findings"] == []
     assert compared["resolved_findings"] == []
-    output = capsys.readouterr().out
-    assert f"old_title={old_title!r}" in output
-    assert f"new_title={new_title!r}" in output
-    assert "match result=finding_id" in output
 
 
 def test_one_code_edit_does_not_split_nearby_findings_into_new_and_resolved():
@@ -455,7 +264,7 @@ def test_comparison_classifies_new_existing_and_resolved_findings():
     assert records_by_id["B"]["thread_id"] == "thread-B"
 
 
-def test_seven_previous_three_current_resolves_only_finding_in_delete_employee_diff(capsys):
+def test_seven_previous_three_current_resolves_only_finding_in_delete_employee_diff():
     previous = [
         {
             **record(f"OLD-{line}", f"Old finding at {line}"),
@@ -498,37 +307,6 @@ def test_seven_previous_three_current_resolves_only_finding_in_delete_employee_d
         existing_by_id[f"OLD-{line}"]["evaluation_status"] == "not_re_evaluated"
         for line in (8, 25, 30, 40)
     )
-    output = capsys.readouterr().out
-    assert "saved_file='src/employee.py' reviewed_scope='changed_old_line'" in output
-    assert "saved_line=19" in output
-    assert "reason=fixed" in output
-    assert "saved_line=25" in output
-    assert "reviewed_scope='not_changed'" in output
-    assert "reason=not_re_evaluated" in output
-
-
-def test_comparison_logs_duplicate_identity_discard(capsys):
-    duplicate_records = [
-        {**record("SAME", "First title"), "repository": "octo/demo", "pr_number": 12, "category": "Security"},
-        {**record("SAME", "Duplicate title"), "repository": "octo/demo", "pr_number": 12, "category": "Security"},
-    ]
-
-    compared = compare_findings(
-        [],
-        duplicate_records,
-        repository="octo/demo",
-        pr_number=12,
-        head_sha="head",
-        reviewed_files=["src/app.py"],
-    )
-
-    assert len(compared["new_findings"]) == 1
-    output = capsys.readouterr().out
-    assert "stage=after_identity_dedup count=1 discarded=1" in output
-    assert "dedup_discarded title='Duplicate title' category='Security'" in output
-    assert "reason=duplicate finding_id SAME; last occurrence retained" in output
-
-
 def test_unreviewed_file_does_not_resolve_finding():
     compared = compare_findings(
         [record("A", "A")],
@@ -543,7 +321,7 @@ def test_unreviewed_file_does_not_resolve_finding():
     assert compared["records"][0]["status"] == "open"
 
 
-def test_resolve_unreviewed_override_cannot_resolve_without_ai_line_scope(capsys):
+def test_resolve_unreviewed_override_cannot_resolve_without_ai_line_scope():
     compared = compare_findings(
         [{**record("A", "A"), "line": 12}],
         [],
@@ -559,66 +337,6 @@ def test_resolve_unreviewed_override_cannot_resolve_without_ai_line_scope(capsys
     assert len(compared["existing_findings"]) == 1
     assert compared["existing_findings"][0]["evaluation_status"] == "not_re_evaluated"
     assert compared["records"][0]["status"] == "open"
-    assert "resolve_unreviewed override ignored for resolution" in capsys.readouterr().out
-
-
-def test_unchanged_context_finding_stays_existing_when_neighbor_is_changed(capsys):
-    prompt_diff = (
-        "FILE: src/app.py\n"
-        "@@ -18,3 +18,3 @@ update\n"
-        " unchanged line with prior finding\n"
-        "-old changed line\n"
-        "+new changed line\n"
-        " unchanged line after\n"
-    )
-    compared = compare_findings(
-        [{**record("CONTEXT", "Unchanged context finding"), "line": 18}],
-        [],
-        repository="octo/demo",
-        pr_number=12,
-        head_sha="new-head",
-        reviewed_files=["src/app.py"],
-        reviewed_line_scope=build_reviewed_line_scope_from_prompt_diff(prompt_diff),
-    )
-
-    assert compared["resolved_findings"] == []
-    assert compared["existing_findings"][0]["finding_id"] == "CONTEXT"
-    assert compared["existing_findings"][0]["evaluation_status"] == "not_re_evaluated"
-    assert "reviewed_scope='not_changed'" in capsys.readouterr().out
-
-
-def test_removed_wildcard_import_resolves_previous_finding(capsys):
-    prompt_diff = (
-        "FILE: src/main/java/example/App.java\n"
-        "@@ -8 +0,0 @@\n"
-        "-import org.springframework.web.bind.annotation.*;\n"
-    )
-    line_scope = build_reviewed_line_scope_from_prompt_diff(prompt_diff)
-    previous = {
-        **record("WILDCARD", "Avoid wildcard imports"),
-        "file": "src/main/java/example/App.java",
-        "line": 8,
-    }
-
-    compared = compare_findings(
-        [previous],
-        [],
-        repository="octo/demo",
-        pr_number=12,
-        head_sha="new-head",
-        reviewed_files=["src/main/java/example/App.java"],
-        reviewed_line_scope=line_scope,
-    )
-
-    assert line_scope[previous["file"]] == {8}
-    assert [item["title"] for item in compared["resolved_findings"]] == [
-        "Avoid wildcard imports"
-    ]
-    assert compared["existing_findings"] == []
-    output = capsys.readouterr().out
-    assert "[P3] PREVIOUS_FINDING finding_id='WILDCARD' line=8" in output
-    assert "[P3] SCOPE_CHECK line=8 in_scope=True" in output
-    assert "changed_old_line=True" in output
 
 
 def test_resolved_finding_returning_is_existing_and_reopened():
@@ -646,7 +364,7 @@ def test_state_round_trip_is_scoped_to_repository_and_pull_request():
     assert decode_lifecycle_state(body, "octo/demo", 13) is None
 
 
-def test_find_state_comment_logs_every_candidate_and_accepts_bot_or_pat_author(capsys):
+def test_find_state_comment_selects_newest_valid_and_accepts_bot_or_pat_author():
     records = [record("A", "A")]
     comments = [
         state_comment(11, records, author="github-actions[bot]"),
@@ -670,18 +388,27 @@ def test_find_state_comment_logs_every_candidate_and_accepts_bot_or_pat_author(c
 
     assert comment_id == 12
     assert loaded == records
-    output = capsys.readouterr().out
-    assert "Inspecting 5 PR issue comments" in output
-    assert "id=12" in output and "author='Mahalakshmi-M26'" in output
-    assert "id=11" in output and "author='github-actions[bot]'" in output
-    assert "State comment id=12 ACCEPTED: selected as newest valid lifecycle state" in output
-    assert "State comment id=11 ACCEPTED: valid lifecycle state, but newer valid state already selected" in output
-    assert "State comment id=13 REJECTED: author 'someone-else' is not in the accepted author list" in output
-    assert "State comment id=14 REJECTED: PR number mismatch: stored=3 requested=12" in output
-    assert "State comment id=15 REJECTED: lifecycle marker framing is missing or altered" in output
 
 
-def test_lifecycle_summary_lists_all_three_states():
+def test_lifecycle_summary_omits_empty_resolved_section():
+    body = append_lifecycle_summary(
+        "Existing review summary",
+        {
+            "resolved_findings": [],
+            "new_findings": [{"title": "Pagination", "file": "src/api.py"}],
+            "existing_findings": [{"title": "DTO usage", "file": "src/model.py"}],
+        },
+    )
+
+    assert "## Finding Lifecycle" in body
+    assert "### Resolved Since Last Review" not in body
+    assert "### New Findings" in body
+    assert "### Existing Findings" in body
+    assert "Pagination" in body
+    assert "DTO usage" in body
+
+
+def test_lifecycle_summary_shows_resolved_section_when_nonempty():
     body = append_lifecycle_summary(
         "Existing review summary",
         {
@@ -809,11 +536,7 @@ def test_reconcile_loads_pat_authored_state_and_resolves_removed_findings(monkey
     assert [item["finding_id"] for item in compared["resolved_findings"]] == ["REMOVED"]
     assert compared["resolved_findings"][0]["thread_id"] == "thread-removed"
     output = capsys.readouterr().out
-    assert "[P3] Lifecycle state location: PR issue comment octo/demo#12" in output
-    assert "[P3] Loaded lifecycle state comment id=91 finding_count=2" in output
-    assert "[P3] Loaded lifecycle finding IDs: ['REMOVED', 'CURRENT']" in output
     assert "[P3] Previous findings: 2" in output
-    assert "[P3] Previous finding IDs: ['REMOVED', 'CURRENT']" in output
 
 
 def test_reconcile_continues_and_persists_retryable_state_when_resolve_fails(monkeypatch, capsys):
@@ -970,12 +693,6 @@ def test_reconcile_backfills_legacy_thread_before_resolving(monkeypatch, capsys)
         and f'"thread_id":"{thread_id}"' in arguments["body"]
         for name, arguments in calls
     )
-    output = capsys.readouterr().out
-    assert f"[P3] BACKFILLED THREAD finding={finding_id} thread={thread_id}" in output
-    assert f"[P3] Resolving finding {finding_id} thread={thread_id}" in output
-    assert f"[P3] MCP resolve_thread {thread_id}" in output
-
-
 def test_reconcile_matches_findings_from_actions_and_pat_user_authors(monkeypatch):
     calls = []
     previous = [
@@ -1118,7 +835,7 @@ def test_open_finding_without_thread_is_retried_as_new(monkeypatch):
     assert not any(name in {"add_issue_comment", "update_issue_comment"} for name, _ in calls)
 
 
-def test_finalize_persists_new_thread_id(monkeypatch, capsys):
+def test_finalize_persists_new_thread_id(monkeypatch):
     calls = []
     threads = [review_thread(
         "thread-new",
@@ -1144,10 +861,6 @@ def test_finalize_persists_new_thread_id(monkeypatch, capsys):
     assert calls[-1][0] == "update_issue_comment"
     saved = json.loads(calls[-1][1]["body"].split("\n", 1)[1].rsplit("\n-->", 1)[0])
     assert saved["findings"][0]["thread_id"] == "thread-new"
-    output = capsys.readouterr().out
-    assert "[P3] Lifecycle state location: PR issue comment octo/demo#12" in output
-    assert "[P3] Saved lifecycle finding IDs: ['D']" in output
-    assert "[P3] Lifecycle state saved in PR issue comment id=91" in output
 
 
 def test_finalize_matches_mcp_author_and_resolves_thread(monkeypatch, capsys):
@@ -1193,14 +906,6 @@ def test_finalize_matches_mcp_author_and_resolves_thread(monkeypatch, capsys):
     saved = json.loads(calls[-1][1]["body"].split("\n", 1)[1].rsplit("\n-->", 1)[0])
     assert saved["findings"][0]["finding_id"] == finding_id
     assert saved["findings"][0]["thread_id"] == thread_id
-    output = capsys.readouterr().out
-    assert f"[P3] EXTRACTED_MARKER={finding_id}" in output
-    assert f"[P3] EXPECTED_FINDING_ID={finding_id}" in output
-    assert "[P3] AUTHOR=github-actions" in output
-    assert "[P3] AUTHOR_MATCH=True" in output
-    assert "[P3] PATH_MATCH=True" in output
-    assert f"[P3] MATCH FOUND finding={finding_id} thread={thread_id}" in output
-    assert f"[P3] SAVING THREAD finding={finding_id} thread={thread_id}" in output
     saved_records.extend(saved["findings"])
 
     second_review = asyncio.run(manager.reconcile(

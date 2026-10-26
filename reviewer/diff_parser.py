@@ -69,7 +69,6 @@ def build_changed_line_map_from_prompt_diff(diff_text: str) -> dict[str, list[di
 def parse_unified_diff_review_scope(patch: str) -> set[int]:
     """Return changed old-side line numbers, excluding additions and context."""
     reviewed_lines: set[int] = set()
-    deleted_import_lines: list[int] = []
     old_line: int | None = None
     new_line: int | None = None
 
@@ -88,20 +87,11 @@ def parse_unified_diff_review_scope(patch: str) -> set[int]:
             new_line += 1
         elif diff_line.startswith("-"):
             reviewed_lines.add(old_line)
-            deleted_source = diff_line[1:].strip()
-            if "import" in deleted_source and "*" in deleted_source:
-                deleted_import_lines.append(old_line)
             old_line += 1
         elif diff_line.startswith(" "):
             old_line += 1
             new_line += 1
 
-    for line_number in deleted_import_lines:
-        in_scope = line_number in reviewed_lines
-        print(
-            f"[P3] IMPORT_DELETION line={line_number} "
-            f"in_scope={str(in_scope).lower()}"
-        )
     return reviewed_lines
 
 
@@ -115,8 +105,4 @@ def build_reviewed_line_scope_from_prompt_diff(diff_text: str) -> dict[str, set[
         patch = diff_text[header.end():end]
         old_lines = parse_unified_diff_review_scope(patch)
         scope[file_name] = old_lines
-        print(
-            f"[P3] REVIEW_SCOPE file={file_name!r} "
-            f"parsed_old_lines={sorted(old_lines)}"
-        )
     return scope

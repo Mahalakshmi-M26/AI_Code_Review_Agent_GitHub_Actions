@@ -185,7 +185,6 @@ class GitHubMCPFindingLifecycle:
     ) -> list[dict[str, Any]]:
         comments: list[dict[str, Any]] = []
         page = 1
-        print(f"[P3] Reading PR issue comments repository={owner}/{repo} issue_number={pull_number}")
         while True:
             result = await self._call(
                 session,
@@ -204,7 +203,6 @@ class GitHubMCPFindingLifecycle:
                 payload = payload.get("comments", [])
             if not isinstance(payload, list):
                 raise RuntimeError("MCP get_comments response did not contain a comments list.")
-            print(f"[P3] PR issue comment page={page} returned={len(payload)}")
             comments.extend(item for item in payload if isinstance(item, dict))
             if len(payload) < self.PAGE_SIZE:
                 break
@@ -248,11 +246,6 @@ class GitHubMCPFindingLifecycle:
         expected_finding_id = finding.get("finding_id")
         expected_path = finding.get("file")
 
-        print(
-            f"[P3] Looking for match: "
-            f"path={expected_path}"
-        )
-
         if not isinstance(expected_finding_id, str) or not expected_finding_id:
             return False
 
@@ -269,21 +262,12 @@ class GitHubMCPFindingLifecycle:
                 and normalize_file_path(path) == normalize_file_path(expected_path)
             )
             author_matches = author in cls.REVIEW_COMMENT_AUTHORS
-            print(f"[P3] EXTRACTED_MARKER={extracted_marker}")
-            print(f"[P3] EXPECTED_FINDING_ID={expected_finding_id}")
-            print(f"[P3] AUTHOR={author}")
-            print(f"[P3] AUTHOR_MATCH={author_matches}")
-            print(f"[P3] PATH_MATCH={path_matches}")
 
             if (
                 extracted_marker == expected_finding_id
                 and path_matches
                 and author_matches
             ):
-                print(
-                    f"[P3] MATCH FOUND finding={expected_finding_id} "
-                    f"thread={thread.get('id')}"
-                )
                 return True
         return False
 
@@ -311,24 +295,12 @@ class GitHubMCPFindingLifecycle:
         repository: str,
         pull_number: int,
     ) -> tuple[int | None, list[dict[str, Any]]]:
-        print(
-            f"[P3] Inspecting {len(comments)} PR issue comments for lifecycle state "
-            f"repository={repository} pull_number={pull_number} "
-            f"accepted_authors={sorted(cls.STATE_COMMENT_AUTHORS)!r}"
-        )
         selected: tuple[int, list[dict[str, Any]]] | None = None
         for comment in reversed(comments):
             user = comment.get("user") or comment.get("author") or {}
             login = user.get("login") if isinstance(user, dict) else None
             body = comment.get("body")
             comment_id = comment.get("id")
-            body_preview = body[:100] if isinstance(body, str) else repr(body)[:100]
-            contains_marker = isinstance(body, str) and STATE_MARKER.strip() in body
-            print(
-                f"[P3] State comment candidate id={comment_id!r} author={login!r} "
-                f"body_preview={body_preview!r} contains_lifecycle_marker={contains_marker}"
-            )
-
             rejection_reason: str | None = None
             if login not in cls.STATE_COMMENT_AUTHORS:
                 rejection_reason = f"author {login!r} is not in the accepted author list"
@@ -373,17 +345,7 @@ class GitHubMCPFindingLifecycle:
                 else:
                     if selected is None:
                         selected = (numeric_comment_id, records)
-                        selection = "selected as newest valid lifecycle state"
-                    else:
-                        selection = "valid lifecycle state, but newer valid state already selected"
-                    print(
-                        f"[P3] State comment id={comment_id!r} ACCEPTED: {selection}; "
-                        f"finding_count={len(records)} "
-                        f"finding_ids={[str(record['finding_id']) for record in records]}"
-                    )
                     continue
-
-            print(f"[P3] State comment id={comment_id!r} REJECTED: {rejection_reason}")
 
         if selected is not None:
             return selected
@@ -463,15 +425,9 @@ class GitHubMCPFindingLifecycle:
         """Read durable state, reconcile existing threads, and save this revision's findings."""
         repository = f"{owner}/{repo}"
         async with self._session() as session:
-            print(f"[P3] Lifecycle state location: PR issue comment {repository}#{pull_number}")
             comments = await self._read_pr_comments(session, owner, repo, pull_number)
             state_comment_id, previous_records = self._find_state_comment(comments, repository, pull_number)
-            previous_ids = [str(record["finding_id"]) for record in previous_records]
-            print(
-                f"[P3] Loaded lifecycle state comment id={state_comment_id} "
-                f"finding_count={len(previous_records)}"
-            )
-            print(f"[P3] Loaded lifecycle finding IDs: {previous_ids}")
+            print(f"[P3] Loaded lifecycle state: {len(previous_records)} findings")
             threads = await self._read_threads(session, owner, repo, pull_number)
             used_thread_ids: set[str] = set()
             threads_by_id = {
@@ -492,10 +448,6 @@ class GitHubMCPFindingLifecycle:
                     continue
                 record["thread_id"] = thread_id
                 used_thread_ids.add(thread_id)
-                print(
-                    f"[P3] BACKFILLED THREAD "
-                    f"finding={record['finding_id']} thread={record['thread_id']}"
-                )
 
             previous_by_id = {str(record["finding_id"]): record for record in previous_records}
             current = [dict(finding) for finding in current_findings]
@@ -519,10 +471,6 @@ class GitHubMCPFindingLifecycle:
                 if not thread_id:
                     continue
                 finding["thread_id"] = thread_id
-                print(
-                    f"[P3] Thread mappedo: "
-                    f"{finding.get('finding_id')} -> {thread_id}"
-                )
                 used_thread_ids.add(thread_id)
                 if previous is None:
                     previous_by_id[str(finding["finding_id"])] = {
@@ -534,7 +482,6 @@ class GitHubMCPFindingLifecycle:
                     }
 
             comparison_previous = list(previous_by_id.values())
-            comparison_previous_ids = [str(record["finding_id"]) for record in comparison_previous]
             comparison = compare_findings(
                 comparison_previous,
                 current,
@@ -548,20 +495,13 @@ class GitHubMCPFindingLifecycle:
             records_by_id = {str(record["finding_id"]): record for record in comparison["records"]}
 
             print(f"[P3] Previous findings: {len(comparison_previous)}")
-            print(f"[P3] Previous finding IDs: {comparison_previous_ids}")
             print(f"[P3] Current findings: {len(current)}")
             print(f"[P3] Resolved findings: {len(comparison['resolved_findings'])}")
 
             for finding in comparison["resolved_findings"]:
-                print(
-                    f"[P3] Resolving finding "
-                    f"{finding.get('finding_id')} "
-                    f"thread={finding.get('thread_id')}"
-                )
                 thread_id = finding.get("thread_id")
                 thread = threads_by_id.get(str(thread_id)) if thread_id else None
                 if thread is not None and not self._thread_resolved(thread):
-                    print(f"[P3] MCP resolve_thread {thread_id}")
                     try:
                         await self._set_thread_resolution(
                             session,
@@ -587,11 +527,6 @@ class GitHubMCPFindingLifecycle:
                     record.pop("thread_resolution_pending", None)
 
             for finding in comparison["existing_findings"]:
-                print(
-                    f"[P3] Existing finding "
-                    f"{finding.get('finding_id')} "
-                    f"thread_id={finding.get('thread_id')}"
-                )
                 thread_id = finding.get("thread_id")
                 thread = threads_by_id.get(str(thread_id)) if thread_id else None
                 if (
@@ -620,17 +555,6 @@ class GitHubMCPFindingLifecycle:
         """Associate newly published inline comments with their MCP review-thread IDs."""
         async with self._session() as session:
             threads = await self._read_threads(session, owner, repo, pull_number)
-            for thread in threads[:3]:
-                print(
-                    f"[P3] MCP thread.id={thread.get('id')!r} "
-                    f"thread.comments={thread.get('comments')!r}"
-                )
-                for comment in self._thread_comments(thread):
-                    print(
-                        f"[P3] MCP comment.body={comment.get('body')!r} "
-                        f"comment.path={comment.get('path')!r} "
-                        f"comment.author={comment.get('author', comment.get('user'))!r}"
-                    )
             old_ids = comparison.get("thread_ids_before") or set()
             records = [dict(record) for record in comparison.get("records", [])]
             used_ids = {str(record["thread_id"]) for record in records if record.get("thread_id")}
@@ -647,24 +571,10 @@ class GitHubMCPFindingLifecycle:
                 if len(matches) == 1:
                     thread_id = self._thread_id(matches[0])
                     finding["thread_id"] = thread_id
-                    print(
-                        f"[P3] SAVING THREAD "
-                        f"finding={finding['finding_id']} thread={thread_id}"
-                    )
                     used_ids.add(str(thread_id))
 
             state_comment_id = comparison.get("state_comment_id")
-            print("[P3] Saving lifecycle state")
-            print(f"[P3] Lifecycle state location: PR issue comment {owner}/{repo}#{pull_number}")
-            print(f"[P3] Saved lifecycle finding IDs: {[str(record['finding_id']) for record in records]}")
-
-            for record in records:
-                print(
-                    f"[P3] State: "
-                    f"{record.get('finding_id')} "
-                    f"thread={record.get('thread_id')}"
-                )
-            saved_comment_id = await self._save_state(
+            await self._save_state(
                 session,
                 owner,
                 repo,
@@ -672,6 +582,6 @@ class GitHubMCPFindingLifecycle:
                 state_comment_id,
                 records,
             )
-            print(f"[P3] Lifecycle state saved in PR issue comment id={saved_comment_id}")
+            print("[P3] Lifecycle state saved")
             comparison["records"] = records
             return comparison

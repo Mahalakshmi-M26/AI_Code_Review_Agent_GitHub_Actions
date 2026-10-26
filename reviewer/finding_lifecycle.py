@@ -53,11 +53,6 @@ def finding_fingerprint(
     context_digest = hashlib.sha256(normalized_context.encode("utf-8")).hexdigest()
     location = f"line:{line}" if isinstance(line, int) and line > 0 else f"context_sha256:{context_digest}"
     identity = "\x1f".join((file_path, issue_type, normalized_severity, location))
-    print(
-        f"[P3] Finding identity input file={file_path!r} issue_type={issue_type!r} "
-        f"severity={normalized_severity!r} line={line!r} "
-        f"location={location!r} title={str(get_value('title'))!r}"
-    )
     return hashlib.sha256(identity.encode("utf-8")).hexdigest()
 
 
@@ -222,11 +217,6 @@ def compare_findings(
         normalize_file_path(path): lines
         for path, lines in (reviewed_line_scope or {}).items()
     }
-    if resolve_unreviewed:
-        print(
-            "[P3] resolve_unreviewed override ignored for resolution: "
-            "a previous finding must have a line in the current AI-reviewed diff scope"
-        )
     records: dict[str, dict[str, Any]] = {}
     new_findings: list[dict[str, Any]] = []
     existing_findings: list[dict[str, Any]] = []
@@ -255,14 +245,6 @@ def compare_findings(
                     and old_legacy_id == previous_id
                     and current_legacy_id == previous_id
                 )
-                print(
-                    f"[P3] FINGERPRINT_COMPATIBILITY old_finding_id={previous_id!r} "
-                    f"old_title={candidate.get('title')!r} old_line={candidate.get('line')!r} "
-                    f"new_candidate_title={current.get('title')!r} "
-                    f"new_candidate_line={current.get('line')!r} "
-                    f"stable_location_score={score!r} "
-                    f"legacy_fingerprint_match={legacy_match}"
-                )
                 if legacy_match:
                     candidates.append((-1, previous_id, candidate))
                     legacy_matches.add(previous_id)
@@ -281,24 +263,9 @@ def compare_findings(
                     if previous_id in legacy_matches
                     else "stable_location"
                 )
-            elif best_candidates:
-                print(
-                    f"[P3] Finding identity ambiguous finding_id={finding_id} "
-                    f"title={current.get('title')!r} "
-                    f"candidates={[item[1] for item in best_candidates]}"
-                )
         elif finding_id in prior_by_id:
             matched_previous_ids.add(finding_id)
 
-        old_title = repr(previous.get("title")) if previous is not None else "None"
-        old_finding_id = repr(previous.get("finding_id")) if previous is not None else "None"
-        print(
-            f"[P3] Finding identity match result={match_reason} "
-            f"old_title={old_title} "
-            f"new_title={current.get('title')!r} "
-            f"old_finding_id={old_finding_id} "
-            f"new_finding_id={finding_id!r}"
-        )
         record = {
             **(previous or {}),
             **current,
@@ -336,62 +303,20 @@ def compare_findings(
             )
             record["finding_id"] = migrated_finding_id
             record["fingerprint_version"] = CURRENT_FINGERPRINT_VERSION
-            print(
-                f"[P3] FINGERPRINT_COMPATIBILITY old_finding_id={finding_id!r} "
-                f"old_title={record.get('title')!r} old_line={record.get('line')!r} "
-                "new_candidate_title=None new_candidate_line=None "
-                "stable_location_score=None legacy_fingerprint_match=True "
-                f"migrated_finding_id={migrated_finding_id!r}"
-            )
         file_path = normalize_file_path(str(record.get("file", "")))
         previous_line = record.get("line")
-        print(
-            f"[P3] PREVIOUS_FINDING finding_id={finding_id!r} "
-            f"line={previous_line!r} file={file_path!r}"
-        )
         in_review_scope = file_path in reviewed
         line_was_changed = (
             isinstance(previous_line, int)
             and previous_line in line_scope.get(file_path, set())
         )
-        print(
-            f"[P3] SCOPE_CHECK line={previous_line!r} "
-            f"in_scope={in_review_scope and line_was_changed} "
-            f"file_reviewed={in_review_scope} "
-            f"changed_old_line={line_was_changed} "
-            f"changed_old_lines={sorted(line_scope.get(file_path, set()))}"
-        )
-        reviewed_scope = (
-            "outside_review_scope"
-            if not in_review_scope
-            else "changed_old_line"
-            if line_was_changed
-            else "not_changed"
-        )
         if record.get("status") == "open" and in_review_scope and line_was_changed:
             record["status"] = "resolved"
             resolved_findings.append(record)
-            reason = "fixed"
         elif record.get("status") == "open":
-            reason = "outside_review_scope" if not in_review_scope else "not_re_evaluated"
             existing_record = dict(record)
             existing_record["evaluation_status"] = "not_re_evaluated"
             existing_findings.append(existing_record)
-        else:
-            reason = "missing_from_ai_output"
-        print(
-            f"[P3] RESOLUTION_DECISION title={record.get('title')!r} "
-            f"finding_id={finding_id!r} saved_line={previous_line!r} "
-            f"saved_file={file_path!r} reviewed_scope={reviewed_scope!r} "
-            f"current_match='missing_from_ai_output' reason={reason}"
-        )
-        print(
-            f"[P3] Resolution scope previous finding_id={finding_id!r} "
-            f"title={record.get('title')!r} file={file_path!r} line={previous_line!r} "
-            f"in_current_diff={in_review_scope and line_was_changed} "
-            f"changed_old_line={line_was_changed} "
-            f"resolution_reason={reason}"
-        )
         records[migrated_finding_id] = record
 
     return {
@@ -441,11 +366,14 @@ def decode_lifecycle_state(
 
 
 def append_lifecycle_summary(body: str, lifecycle: dict[str, Any]) -> str:
-    sections = (
-        ("Resolved Since Last Review", lifecycle.get("resolved_findings") or [], "✅"),
+    resolved_findings = lifecycle.get("resolved_findings") or []
+    sections = []
+    if resolved_findings:
+        sections.append(("Resolved Since Last Review", resolved_findings, "✅"))
+    sections.extend((
         ("New Findings", lifecycle.get("new_findings") or [], "🆕"),
         ("Existing Findings", lifecycle.get("existing_findings") or [], "⚠"),
-    )
+    ))
     lines = ["## Finding Lifecycle"]
     for heading, findings, icon in sections:
         lines.extend(("", f"### {heading}"))

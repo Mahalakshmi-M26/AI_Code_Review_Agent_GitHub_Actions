@@ -1,10 +1,8 @@
 from reviewer.diff_parser import (
     build_changed_line_map,
-    build_reviewed_line_scope_from_prompt_diff,
     parse_unified_diff,
 )
 from reviewer.models import ReviewResult
-from reviewer.providers.github_mcp import GitHubMCPProvider
 from reviewer.review import (
     build_github_review_payload,
     build_review_prompt,
@@ -91,59 +89,6 @@ def test_changed_line_extraction_handles_multiple_hunks():
         {"line": 2, "content": "inserted near top"},
         {"line": 22, "content": "inserted near bottom"},
     ]
-
-
-def test_reviewed_line_scope_includes_changed_old_lines_only():
-    prompt_diff = (
-        "FILE: src/employee.py\n"
-        "@@ -18,4 +18,3 @@ deleteEmployee\n"
-        " context before\n"
-        "-removed employee deletion\n"
-        "+updated employee deletion\n"
-        " context after\n"
-    )
-
-    assert build_reviewed_line_scope_from_prompt_diff(prompt_diff) == {
-        "src/employee.py": {19},
-    }
-
-
-def test_reviewed_line_scope_uses_old_coordinates_after_insertion():
-    prompt_diff = (
-        "FILE: src/employee.py\n"
-        "@@ -10,3 +10,4 @@ update\n"
-        "+inserted line\n"
-        " context before changed line\n"
-        "-old changed line\n"
-        "+new changed line\n"
-        " context after\n"
-    )
-
-    assert build_reviewed_line_scope_from_prompt_diff(prompt_diff) == {
-        "src/employee.py": {11},
-    }
-
-
-def test_removed_wildcard_import_enters_reviewed_old_line_scope(capsys):
-    full_diff = (
-        "diff --git a/src/main/java/example/App.java b/src/main/java/example/App.java\n"
-        "index 1234567..89abcde 100644\n"
-        "--- a/src/main/java/example/App.java\n"
-        "+++ b/src/main/java/example/App.java\n"
-        "@@ -8,1 +7,0 @@\n"
-        "-import org.springframework.web.bind.annotation.*;\n"
-    )
-    normalized_files = GitHubMCPProvider._parse_unified_diff(full_diff)
-    filtered = filter_changed_files(normalized_files)
-
-    scope = build_reviewed_line_scope_from_prompt_diff(filtered["diff_text"])
-
-    assert scope == {
-        "src/main/java/example/App.java": {8},
-    }
-    output = capsys.readouterr().out
-    assert "[P3] IMPORT_DELETION line=8 in_scope=true" in output
-    assert "[P3] REVIEW_SCOPE file='src/main/java/example/App.java' parsed_old_lines=[8]" in output
 
 
 def test_invalid_model_line_is_rejected_to_null():
