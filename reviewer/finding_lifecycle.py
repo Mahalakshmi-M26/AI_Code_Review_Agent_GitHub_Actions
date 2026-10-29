@@ -217,6 +217,10 @@ def compare_findings(
         normalize_file_path(path): lines
         for path, lines in (reviewed_line_scope or {}).items()
     }
+    print("========== DEBUG SCOPE ==========")
+    print("reviewed_files =", reviewed)
+    print("reviewed_line_scope =", line_scope)
+    print("=================================")
     records: dict[str, dict[str, Any]] = {}
     new_findings: list[dict[str, Any]] = []
     existing_findings: list[dict[str, Any]] = []
@@ -305,6 +309,12 @@ def compare_findings(
             record["fingerprint_version"] = CURRENT_FINGERPRINT_VERSION
         file_path = normalize_file_path(str(record.get("file", "")))
         previous_line = record.get("line")
+        print(
+            f"DEBUG_FINDING "
+            f"title={record.get('title')} "
+            f"line={previous_line} "
+            f"scope={line_scope.get(file_path, set())}"
+        )
         in_review_scope = file_path in reviewed
         line_was_changed = (
             isinstance(previous_line, int)
