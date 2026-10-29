@@ -149,9 +149,6 @@ Step 5: AI Review Generated (Summary + Inline Comments)
 
 Secrets belong in GitHub Actions secrets, not source or logs. `GITHUB_TOKEN` is workflow-provided and scoped by the job permissions. PR content is untrusted; the model receives only bounded diffs and the policy, and model locations are independently checked. Review output is advisory; human approval remains required. Before production use, assess GitHub App authentication, retries/backoff, rate limits, auditing, telemetry, token/cost controls, immutable workflow pinning, and organizational policy requirements.
 
-## Demo
-
-Use the final eight-slide deck at [`docs/ai-code-review-agent-final-demo.pptx`](docs/ai-code-review-agent-final-demo.pptx) and the mentor preparation guide at [`docs/demo-questions-and-answers.md`](docs/demo-questions-and-answers.md). Suggested live sequence: show the PR; push a controlled commit; show Actions start; show MCP retrieval; show GEP, Pydantic, and line validation; show MCP review publishing; refresh the PR and inspect summary/inline comments; fix one issue and push again to demonstrate `synchronize`; explain P3 thread lifecycle as future work.
 
 Local tests:
 

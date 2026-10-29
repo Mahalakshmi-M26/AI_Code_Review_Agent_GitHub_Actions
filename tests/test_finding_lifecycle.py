@@ -264,7 +264,7 @@ def test_comparison_classifies_new_existing_and_resolved_findings():
     assert records_by_id["B"]["thread_id"] == "thread-B"
 
 
-def test_seven_previous_three_current_resolves_only_finding_in_delete_employee_diff():
+def test_seven_previous_four_current_resolves_unmatched_findings_in_reviewed_file():
     previous = [
         {
             **record(f"OLD-{line}", f"Old finding at {line}"),
@@ -285,6 +285,13 @@ def test_seven_previous_three_current_resolves_only_finding_in_delete_employee_d
             "severity": "MEDIUM",
             "line": 20,
         },
+        {
+            **record("NEW-21", "Current authorization finding"),
+            "file": "src/employee.py",
+            "category": "Authorization",
+            "severity": "HIGH",
+            "line": 21,
+        },
     ]
 
     compared = compare_findings(
@@ -298,15 +305,22 @@ def test_seven_previous_three_current_resolves_only_finding_in_delete_employee_d
     )
 
     assert len(previous) == 7
-    assert len(current) == 3
-    assert [finding["finding_id"] for finding in compared["resolved_findings"]] == ["OLD-19"]
-    assert [finding["finding_id"] for finding in compared["new_findings"]] == ["NEW-20"]
+    assert len(current) == 4
+    assert {finding["finding_id"] for finding in compared["resolved_findings"]} == {
+        "OLD-8",
+        "OLD-19",
+        "OLD-25",
+        "OLD-30",
+        "OLD-40",
+    }
+    assert {finding["finding_id"] for finding in compared["new_findings"]} == {
+        "NEW-20",
+        "NEW-21",
+    }
     existing_by_id = {finding["finding_id"]: finding for finding in compared["existing_findings"]}
-    assert set(existing_by_id) == {"OLD-2", "OLD-5", "OLD-8", "OLD-25", "OLD-30", "OLD-40"}
-    assert all(
-        existing_by_id[f"OLD-{line}"]["evaluation_status"] == "not_re_evaluated"
-        for line in (8, 25, 30, 40)
-    )
+    assert set(existing_by_id) == {"OLD-2", "OLD-5"}
+
+
 def test_unreviewed_file_does_not_resolve_finding():
     compared = compare_findings(
         [record("A", "A")],
@@ -321,7 +335,7 @@ def test_unreviewed_file_does_not_resolve_finding():
     assert compared["records"][0]["status"] == "open"
 
 
-def test_resolve_unreviewed_override_cannot_resolve_without_ai_line_scope():
+def test_reviewed_file_resolves_disappeared_finding_without_line_scope():
     compared = compare_findings(
         [{**record("A", "A"), "line": 12}],
         [],
@@ -329,14 +343,42 @@ def test_resolve_unreviewed_override_cannot_resolve_without_ai_line_scope():
         pr_number=12,
         head_sha="new-head",
         reviewed_files=["src/app.py"],
-        resolve_unreviewed=True,
         reviewed_line_scope={},
     )
 
-    assert compared["resolved_findings"] == []
-    assert len(compared["existing_findings"]) == 1
-    assert compared["existing_findings"][0]["evaluation_status"] == "not_re_evaluated"
-    assert compared["records"][0]["status"] == "open"
+    assert [item["finding_id"] for item in compared["resolved_findings"]] == ["A"]
+    assert compared["existing_findings"] == []
+    assert compared["records"][0]["status"] == "resolved"
+
+
+@pytest.mark.parametrize(
+    "title",
+    [
+        "Wildcard import from org.springframework.web.bind.annotation",
+        "Use a logging framework instead of print statements",
+        "Authorization check is missing",
+    ],
+)
+def test_disappeared_findings_resolve_from_reviewed_file_without_line_scope(title):
+    previous = {
+        **record(f"finding-{title}", title),
+        "file": "src/app.py",
+        "line": 8,
+    }
+
+    compared = compare_findings(
+        [previous],
+        [],
+        repository="octo/demo",
+        pr_number=12,
+        head_sha="new-head",
+        reviewed_files=["src/app.py"],
+        reviewed_line_scope={},
+    )
+
+    assert [item["title"] for item in compared["resolved_findings"]] == [title]
+    assert compared["existing_findings"] == []
+    assert compared["resolved_findings"][0]["status"] == "resolved"
 
 
 def test_resolved_finding_returning_is_existing_and_reopened():
@@ -608,7 +650,7 @@ def test_out_of_scope_previous_finding_is_existing_without_unresolving_thread(mo
         12,
         "new-head",
         [],
-        ["src/app.py"],
+        ["src/other.py"],
         reviewed_line_scope={"src/app.py": {10, 11, 12}},
     ))
 

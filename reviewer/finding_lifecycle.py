@@ -213,10 +213,6 @@ def compare_findings(
         f"discarded={len(current_findings) - len(current_by_id)}"
     )
     reviewed = {normalize_file_path(path) for path in reviewed_files}
-    line_scope = {
-        normalize_file_path(path): lines
-        for path, lines in (reviewed_line_scope or {}).items()
-    }
     records: dict[str, dict[str, Any]] = {}
     new_findings: list[dict[str, Any]] = []
     existing_findings: list[dict[str, Any]] = []
@@ -304,13 +300,8 @@ def compare_findings(
             record["finding_id"] = migrated_finding_id
             record["fingerprint_version"] = CURRENT_FINGERPRINT_VERSION
         file_path = normalize_file_path(str(record.get("file", "")))
-        previous_line = record.get("line")
         in_review_scope = file_path in reviewed
-        line_was_changed = (
-            isinstance(previous_line, int)
-            and previous_line in line_scope.get(file_path, set())
-        )
-        if record.get("status") == "open" and in_review_scope and line_was_changed:
+        if record.get("status") == "open" and in_review_scope:
             record["status"] = "resolved"
             resolved_findings.append(record)
         elif record.get("status") == "open":
