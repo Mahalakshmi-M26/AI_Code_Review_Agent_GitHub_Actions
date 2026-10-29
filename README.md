@@ -40,19 +40,23 @@ The central repository owns `.github/workflows/ai-code-review-reusable.yml`, Pyt
 Example consumer workflow:
 
 ```yaml
-name: AI PR Review
+name: Caller AI PR Review
+
 on:
   pull_request:
     types: [opened, reopened, synchronize]
+
+permissions:
+  contents: read
+  pull-requests: write
+  issues: write
+
 jobs:
   review:
-    uses: <central-org>/<central-repo>/.github/workflows/ai-code-review-reusable.yml@main
-    permissions:
-      contents: read
-      pull-requests: write
-      issues: write
-    secrets:
+     uses: Mahalakshmi-M26/AI_Code_Review_Agent_GitHub_Actions/.github/workflows/ai-code-review-reusable.yml@main
+     secrets:
       GEP_API_KEY: ${{ secrets.GEP_API_KEY }}
+      PAT_TOKEN: ${{ secrets.PAT_TOKEN }}
 ```
 
 The caller must grant these permissions; a reusable workflow cannot elevate the caller's `GITHUB_TOKEN` permissions. For fork pull requests triggered with `pull_request`, GitHub normally downgrades write permissions to read-only unless repository Actions settings explicitly allow write tokens for fork PRs. The reusable workflow logs the event name, token source, declared permissions, and fork status without printing the token value.
@@ -120,19 +124,28 @@ The generic AI review path has been validated using Python, Java, and JavaScript
 Step 1: Add Reusable Workflow Call
   In the consumer repository:
 ```yaml
-name: AI PR Review
+name: Caller AI PR Review
+
 on:
   pull_request:
     types: [opened, reopened, synchronize]
+
+permissions:
+  contents: read
+  pull-requests: write
+  issues: write
+
 jobs:
   review:
-    uses: <central-org>/<central-repo>/.github/workflows/ai-code-review-reusable.yml@main
-    secrets:
+     uses: Mahalakshmi-M26/AI_Code_Review_Agent_GitHub_Actions/.github/workflows/ai-code-review-reusable.yml@main
+     secrets:
       GEP_API_KEY: ${{ secrets.GEP_API_KEY }}
+      PAT_TOKEN: ${{ secrets.PAT_TOKEN }}
 ```
 Step 2: Add Required Secrets
     Repository → Settings → Secrets and Variables → Actions > New Repository secret
        Name: GEP_API_KEY        Secret: YOUR_API_KEY
+       Name: PAT_TOKEN          Secret: YOUR_PAT_TOKEN
        
 Step 3: Open a Pull Request
 Step 4: GitHub Action Runs
@@ -143,15 +156,11 @@ Step 5: AI Review Generated (Summary + Inline Comments)
 
 - **P1 — COMPLETE:** GitHub Actions trigger/runtime, reusable multi-repository workflow, PR lifecycle events, external configuration, and MCP Pull Request reads.
 - **P2 — COMPLETE:** enterprise summary, deterministic added-line mapping, validated inline comments, summary-only findings, pending MCP review, MCP inline comments, MCP COMMENT submission, and human-in-the-loop behavior.
-- **P3 — COMPLETE:** stable finding identity, cross-synchronize state, duplicate suppression, resolved-finding detection, and MCP-native review-thread resolve/reopen.
 
 ## Security
 
 Secrets belong in GitHub Actions secrets, not source or logs. `GITHUB_TOKEN` is workflow-provided and scoped by the job permissions. PR content is untrusted; the model receives only bounded diffs and the policy, and model locations are independently checked. Review output is advisory; human approval remains required. Before production use, assess GitHub App authentication, retries/backoff, rate limits, auditing, telemetry, token/cost controls, immutable workflow pinning, and organizational policy requirements.
 
-## Demo
-
-Use the final eight-slide deck at [`docs/ai-code-review-agent-final-demo.pptx`](docs/ai-code-review-agent-final-demo.pptx) and the mentor preparation guide at [`docs/demo-questions-and-answers.md`](docs/demo-questions-and-answers.md). Suggested live sequence: show the PR; push a controlled commit; show Actions start; show MCP retrieval; show GEP, Pydantic, and line validation; show MCP review publishing; refresh the PR and inspect summary/inline comments; fix one issue and push again to demonstrate `synchronize`; explain P3 thread lifecycle as future work.
 
 Local tests:
 
