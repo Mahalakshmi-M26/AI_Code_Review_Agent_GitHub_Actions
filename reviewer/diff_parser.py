@@ -75,6 +75,7 @@ def parse_unified_diff_review_scope(patch: str) -> set[int]:
     for diff_line in patch.splitlines():
         hunk = HUNK_SCOPE_HEADER.match(diff_line)
         if hunk:
+            print(f"[DEBUG_HUNK] {diff_line}")
             old_line = int(hunk.group(1))
             new_line = int(hunk.group(3))
             continue
@@ -84,9 +85,11 @@ def parse_unified_diff_review_scope(patch: str) -> set[int]:
         if diff_line.startswith(("+++", "---")):
             continue
         if diff_line.startswith("+"):
+            print(f"[DEBUG_ADD] new_line={new_line}")
             reviewed_lines.add(new_line)
             new_line += 1
         elif diff_line.startswith("-"):
+            print(f"[DEBUG_DELETE] old_line={old_line}")
             reviewed_lines.add(old_line)
             old_line += 1
         elif diff_line.startswith(" "):
@@ -106,4 +109,8 @@ def build_reviewed_line_scope_from_prompt_diff(diff_text: str) -> dict[str, set[
         patch = diff_text[header.end():end]
         old_lines = parse_unified_diff_review_scope(patch)
         scope[file_name] = old_lines
+    print("===== PARSER OUTPUT =====")
+    for file_name, lines in scope.items():
+        print(f"{file_name} -> {sorted(lines)}")
+    print("========================")
     return scope
