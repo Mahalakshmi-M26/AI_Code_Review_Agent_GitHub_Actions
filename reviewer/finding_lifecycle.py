@@ -334,6 +334,12 @@ def compare_findings(
                     if previous_id in legacy_matches
                     else "stable_location"
                 )
+                print(
+                    f"[MATCH_SELECTED] "
+                    f"previous={previous.get('title')} "
+                    f"current={current.get('title')} "
+                    f"score={best_score}"
+                )
         elif finding_id in prior_by_id:
             matched_previous_ids.add(finding_id)
 
@@ -350,6 +356,10 @@ def compare_findings(
         if previous is not None and not current.get("thread_id") and previous.get("thread_id"):
             record["thread_id"] = previous["thread_id"]
         if previous is None:
+            print(
+                f"[NEW_FINDING] "
+                f"title={record.get('title')}"
+            )
             new_findings.append(record)
         else:
             existing_findings.append(record)
@@ -389,6 +399,7 @@ def compare_findings(
         )
         if record.get("status") == "open" and in_review_scope and line_was_changed:
             record["status"] = "resolved"
+            print(f"[RESOLVED] {record.get('title')}")  
             resolved_findings.append(record)
         elif record.get("status") == "open":
             existing_record = dict(record)
