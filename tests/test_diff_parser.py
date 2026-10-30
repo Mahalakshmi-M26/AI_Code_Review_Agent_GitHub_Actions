@@ -1,5 +1,6 @@
 from reviewer.diff_parser import (
     build_changed_line_map,
+    build_reviewed_line_scope_from_prompt_diff,
     parse_unified_diff,
 )
 from reviewer.models import ReviewResult
@@ -89,6 +90,31 @@ def test_changed_line_extraction_handles_multiple_hunks():
         {"line": 2, "content": "inserted near top"},
         {"line": 22, "content": "inserted near bottom"},
     ]
+
+
+def test_reviewed_scope_includes_lines_added_to_new_file():
+    prompt_diff = (
+        "FILE: src/App.java\n"
+        "@@ -0,0 +1,57 @@\n"
+        + "".join(f"+line {line}\n" for line in range(1, 58))
+    )
+
+    scope = build_reviewed_line_scope_from_prompt_diff(prompt_diff)
+
+    assert scope["src/App.java"] == set(range(1, 58))
+
+
+def test_reviewed_scope_includes_old_and_new_replacement_lines():
+    prompt_diff = (
+        "FILE: src/App.java\n"
+        "@@ -8,1 +8,8 @@\n"
+        "-old line 8\n"
+        + "".join(f"+new line {line}\n" for line in range(8, 16))
+    )
+
+    scope = build_reviewed_line_scope_from_prompt_diff(prompt_diff)
+
+    assert scope["src/App.java"] == set(range(8, 16))
 
 
 def test_invalid_model_line_is_rejected_to_null():
