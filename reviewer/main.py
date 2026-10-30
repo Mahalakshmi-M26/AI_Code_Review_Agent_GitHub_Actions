@@ -267,6 +267,13 @@ def main() -> None:
         max_review_input_chars=int(os.getenv("MAX_REVIEW_INPUT_CHARS", str(MAX_REVIEW_INPUT_CHARS))),
     )
     reviewed_line_scope = build_reviewed_line_scope_from_prompt_diff(filtered["diff_text"])
+    print("===== DIFF TEXT START =====")
+    print(filtered["diff_text"])
+    print("===== DIFF TEXT END =====")
+
+    print("===== REVIEW SCOPE =====")
+    print(reviewed_line_scope)
+    print("==========================")
     max_files = int(os.getenv("MAX_FILES", str(MAX_FILES)))
     max_file_diff_chars = int(os.getenv("MAX_FILE_DIFF_CHARS", str(MAX_FILE_DIFF_CHARS)))
     max_review_input_chars = int(os.getenv("MAX_REVIEW_INPUT_CHARS", str(MAX_REVIEW_INPUT_CHARS)))
