@@ -14,6 +14,33 @@ from .review import build_inline_review_comments
 STATE_MARKER = "<!-- ai-review-finding-lifecycle:v1\n"
 STATE_END_MARKER = "\n-->"
 CURRENT_FINGERPRINT_VERSION = 2
+TITLE_STOP_WORDS = {
+    "endpoint",
+    "endpoints",
+    "controller",
+    "method",
+    "methods",
+    "present",
+    "observed",
+    "explicit",
+    "explicitely",
+    "checks",
+    "handling",
+    "returns",
+    "return",
+    "for",
+    "on",
+    "in",
+    "the",
+    "a",
+    "an",
+}
+TITLE_TOKEN_ALIASES = {
+    "unbounded": "pagination",
+    "created": "create",
+    "creating": "create",
+    "resources": "resource",
+}
 
 
 def normalize_file_path(value: str) -> str:
@@ -34,6 +61,15 @@ def normalize_code_context(value: str) -> str:
 
 def normalize_issue_type(value: str) -> str:
     return re.sub(r"[^a-z0-9]+", " ", value.casefold()).strip()
+
+
+def normalize_title(value: str) -> set[str]:
+    tokens = re.sub(r"[^a-z0-9]+", " ", value.casefold()).split()
+    return {
+        TITLE_TOKEN_ALIASES.get(token, token)
+        for token in tokens
+        if token not in TITLE_STOP_WORDS
+    }
 
 
 def finding_fingerprint(
@@ -109,6 +145,24 @@ def _finding_location_score(previous: dict[str, Any], current: dict[str, Any]) -
         and abs(previous_line - current_line) <= 5
     ):
         return 10 + abs(previous_line - current_line)
+
+    previous_title_tokens = normalize_title(str(previous.get("title") or ""))
+    current_title_tokens = normalize_title(str(current.get("title") or ""))
+    if (
+        isinstance(previous_line, int)
+        and previous_line > 0
+        and isinstance(current_line, int)
+        and current_line > 0
+        and abs(previous_line - current_line) <= 15
+        and previous_title_tokens
+        and current_title_tokens
+    ):
+        overlap = len(previous_title_tokens & current_title_tokens) / min(
+            len(previous_title_tokens),
+            len(current_title_tokens),
+        )
+        if overlap >= 0.5:
+            return 20 + abs(previous_line - current_line)
     print(
     f"[LOCATION_MATCH] "
     f"prev={previous.get('title')} "

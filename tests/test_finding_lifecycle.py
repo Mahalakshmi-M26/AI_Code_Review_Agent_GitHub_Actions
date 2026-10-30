@@ -194,6 +194,68 @@ def test_paraphrased_finding_at_same_location_is_existing(old_title, new_title):
     assert compared["resolved_findings"] == []
 
 
+@pytest.mark.parametrize(
+    ("old_title", "new_title", "category", "severity"),
+    [
+        (
+            "No explicit authorization on controller methods",
+            "No explicit authentication/authorization checks on controller endpoints",
+            "Security",
+            "HIGH",
+        ),
+        (
+            "getAll endpoint lacks pagination",
+            "getAll returns unbounded list",
+            "Reliability",
+            "MEDIUM",
+        ),
+        (
+            "Include Location header for created resources",
+            "Location header when creating resource",
+            "REST API",
+            "MEDIUM",
+        ),
+    ],
+)
+def test_semantically_rephrased_finding_within_fifteen_lines_is_existing(
+    old_title,
+    new_title,
+    category,
+    severity,
+):
+    previous = {
+        **record("previous", old_title),
+        "file": "src/app.py",
+        "category": category,
+        "issue_type": category,
+        "severity": severity,
+        "line": 10,
+        "code_context": "old context",
+    }
+    current = {
+        **record("current", new_title),
+        "file": "src/app.py",
+        "category": category,
+        "issue_type": category,
+        "severity": severity,
+        "line": 20,
+        "code_context": "new context",
+    }
+
+    compared = compare_findings(
+        [previous],
+        [current],
+        repository="octo/demo",
+        pr_number=12,
+        head_sha="new-head",
+        reviewed_files=["src/app.py"],
+    )
+
+    assert [item["title"] for item in compared["existing_findings"]] == [new_title]
+    assert compared["new_findings"] == []
+    assert compared["resolved_findings"] == []
+
+
 def test_one_code_edit_does_not_split_nearby_findings_into_new_and_resolved():
     previous = []
     current = []
