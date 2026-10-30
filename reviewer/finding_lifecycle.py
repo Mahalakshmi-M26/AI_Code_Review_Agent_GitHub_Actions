@@ -109,6 +109,13 @@ def _finding_location_score(previous: dict[str, Any], current: dict[str, Any]) -
         and abs(previous_line - current_line) <= 5
     ):
         return 10 + abs(previous_line - current_line)
+    print(
+    f"[LOCATION_MATCH] "
+    f"prev={previous.get('title')} "
+    f"curr={current.get('title')} "
+    f"prev_line={previous_line} "
+    f"curr_line={current_line}"
+    )
     return None
 
 
@@ -242,6 +249,12 @@ def compare_findings(
                 ):
                     continue
                 score = _finding_location_score(candidate, current)
+                print(
+                    f"[MATCH_DEBUG] "
+                    f"previous={candidate.get('title')} "
+                    f"current={current.get('title')} "
+                    f"score={score}"
+                )
                 old_legacy_id = _legacy_finding_fingerprint(candidate)
                 current_legacy_id = _legacy_finding_fingerprint(current)
                 legacy_match = (
